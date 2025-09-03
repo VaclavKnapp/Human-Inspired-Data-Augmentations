@@ -1,7 +1,0 @@
-defaults:
-  - _self_
-  - backbone: dinov2_large
-  - dataset: hida
-
-batch_size: 64
-num_workers: 16
