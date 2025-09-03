@@ -3,6 +3,8 @@ models/
 outputs/
 logs/
 augmented_samples/
+augmented_samples_new/
+*.log
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
