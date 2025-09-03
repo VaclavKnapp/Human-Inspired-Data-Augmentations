@@ -1,0 +1,2 @@
+_target_: datasets.mochi_dataset.MochiDataset
+csv_path: /datasets/hida/current/neurips_benchmark/benchmark.csv

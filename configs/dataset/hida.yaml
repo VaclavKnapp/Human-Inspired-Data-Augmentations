@@ -1,0 +1,6 @@
+_target_: datasets.hida_dataset.HIDADataset
+csv_path: /datasets/hida/current/hida_dataset_60K.csv
+split: null
+filters: null
+train_ratio: 0.95
+random_seed: 42

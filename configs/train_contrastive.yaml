@@ -1,0 +1,23 @@
+defaults:
+  - backbone: dinov2_large
+  - dataset@train_dataset: hida
+  - dataset@val_dataset: hida
+  - dataset@test_dataset: mochi
+  - optimizer: adam
+  - _self_
+
+system:
+  random_seed: 42
+  num_gpus: 1
+
+batch_size: 32
+epochs: 50
+num_workers: 4
+margin: 0.1
+
+log_dir: ./logs
+
+use_lora: true
+lora_r: 8
+lora_alpha: 8
+lora_dropout: 0.1

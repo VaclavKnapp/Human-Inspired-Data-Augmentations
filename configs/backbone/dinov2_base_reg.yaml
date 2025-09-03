@@ -1,0 +1,7 @@
+_target_: models.dinov2.DINOv2
+checkpoint: vit_base_patch14_reg4_dinov2
+output: cls
+layer: -1
+return_multilayer: false
+layer_norm_post: true
+image_size: 224

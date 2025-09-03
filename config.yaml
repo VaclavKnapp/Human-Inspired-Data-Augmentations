@@ -1,0 +1,170 @@
+# HIDA Training Configuration
+# =========================
+# Unified configuration file for HIDA training pipeline
+# Supports both regular HIDA and HIDA with Objaverse datasets
+
+# Dataset Generation Configuration
+# ================================
+dataset_generation:
+  # Dataset type: "hida", "hida_objaverse", or "objaverse" 
+  # - "hida": Uses create_csv.py (Shapegen + Primigen only)
+  # - "hida_objaverse": Uses create_csv_w_Objaverse.py (Shapegen + Primigen + Objaverse)
+  # - "objaverse": Uses create_csv_w_Objaverse.py (Objaverse only)
+  dataset_type: "hida_objaverse"
+  
+  # Paths for dataset generation
+  paths:
+    # Shapegen paths
+    shapegen_black: "/datasets/hida/current/shapegen/images_black_bg"
+    shapegen_random: "/datasets/hida/current/shapegen/images_random_bg" 
+    shapegen_white: "/datasets/hida/current/shapegen/images_white_bg"
+    shapegen_black_sim: "/datasets/hida/current/shapegen/obj_pair_sim_black_bg/object_similarities_precomputed.pkl"
+    shapegen_random_sim: "/datasets/hida/current/shapegen/obj_pair_sim/object_similarities_precomputed.pkl"
+    shapegen_white_sim: "/datasets/hida/current/shapegen/obj_pair_sim_white_bg/object_similarities_precomputed.pkl"
+    shapegen_camera: "/datasets/hida/current/shapegen/base_images_camera_info"
+    
+    # Primigen paths
+    primigen_black: "/datasets/hida/current/primigen/images_black_bg"
+    primigen_random: "/datasets/hida/current/primigen/images_random_bg"
+    primigen_white: "/datasets/hida/current/primigen/images_white_bg"
+    primigen_camera: "/datasets/hida/current/primigen/base_images_camera_info"
+    
+    # Objaverse paths (used only when dataset_type includes "objaverse")
+    objaverse_black: "/datasets/hida/current/Objaverse_segmented_black"
+    objaverse_random: "/datasets/hida/current/Objaverse_segmented_random" 
+    objaverse_white: "/datasets/hida/current/Objaverse_segmented_white"
+    objaverse_sim: "/datasets/hida/current/Objaverse_sim/object_similarities_objaverse.pkl"
+  
+  # Generation parameters
+  triplets_per_combo: 6666  # Number of triplets per dataset+background combination
+  regenerate_per_epoch: true  # Regenerate dataset for each epoch (for data diversity)
+  
+  # Ratio distributions
+  shapegen_ratios: [0.15, 0.45, 0.40]  # [low, medium, high] similarity ratios
+  primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
+  objaverse_ratios: [0.05, 0.20, 0.75]  # [low, medium, high] similarity ratios
+  n_ratios: [0.40, 0.40, 0.20]  # [n2, n3, n4] complexity ratios for Primigen
+  
+  # Random seed for reproducible dataset generation
+  seed: 42
+
+# System Configuration
+# ===================
+system:
+  random_seed: 42
+  num_gpus: 1
+
+# Training Configuration
+# =====================
+training:
+  batch_size: 32
+  epochs: 50
+  num_workers: 4
+  log_dir: "./logs"
+
+# Model Configuration
+# ==================
+model:
+  # Backbone configuration
+  backbone:
+    _target_: models.dinov2.DINOv2
+    checkpoint: "vit_large_patch14_dinov2"  # Options: vit_base_patch14_dinov2, vit_large_patch14_dinov2
+    output: "cls"
+    layer: -1
+    return_multilayer: false
+    layer_norm_post: true
+    image_size: 224
+  
+  # LoRA Configuration
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 8
+  lora_dropout: 0.1
+
+# Loss Configuration
+# =================
+loss:
+  # Loss function type: "triplet", "hinge", "multi_similarity", "oddity"
+  type: "oddity"
+  
+  # Loss-specific parameters
+  margin: 0.1  # Used by triplet and hinge loss
+  temperature: 0.1  # Used by oddity loss
+  
+  # Multi-similarity loss parameters (used when type="multi_similarity")
+  alpha: 2
+  beta: 50
+  base: 1
+
+# Optimizer Configuration
+# ======================
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 3e-6
+  weight_decay: 1e-4
+  betas: [0.9, 0.999]
+
+# Dataset Configuration
+# ====================
+dataset:
+  # Main dataset configuration
+  _target_: datasets.hida_dataset.HIDADataset
+  csv_path: "/datasets/hida/current/hida_dataset.csv"  # Will be dynamically set based on generation
+  train_ratio: 0.95
+  random_seed: 42
+  
+  # Dataset splits with filters
+  train_dataset:
+    split: "train"
+    filters: null  # Can be used to filter by BG, DATASET, etc. Example: {BG: "BLACK", DATASET: "SHAPEGEN"}
+  
+  val_dataset:
+    split: "val"
+    filters: null
+  
+  test_dataset:
+    _target_: datasets.hida_dataset.HIDADataset
+    csv_path: "/datasets/hida/current/mochi_dataset.csv"
+    split: null
+    filters: null
+    train_ratio: 1.0
+    random_seed: 42
+
+# Data Augmentation Configuration
+# ==============================
+augmentation:
+  # Enable/disable augmentations during training
+  enabled: true
+  
+  # Augmentation parameters
+  save_every_n: 1000  # Save augmented samples every N items for inspection
+  save_dir: "./augmented_samples"  # Directory to save augmented samples
+  
+  # Individual augmentation parameters
+  color_jitter:
+    brightness: 0.10
+    contrast: 0.13
+    saturation: 0.1
+    hue: 0.05
+    probability: 0.5
+  
+  gaussian_blur:
+    kernel_size: 3
+    sigma: [0.1, 0.6]
+    probability: 0.5
+  
+  motion_blur:
+    kernel_size: 5
+    probability: 0.5
+  
+  gaussian_noise:
+    mean: 0.0
+    std_min: 0.003
+    std_max: 0.03
+    probability: 0.5
+
+# Evaluation Configuration  
+# =======================
+evaluation:
+  batch_size: 70  # Batch size for evaluation
+  num_workers: 4

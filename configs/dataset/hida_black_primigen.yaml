@@ -1,0 +1,8 @@
+_target_: datasets.hida_dataset.HIDADataset
+csv_path: /datasets/hida/current/hida_dataset_120K.csv
+split: null
+train_ratio: 0.8
+random_seed: 42
+filters:
+  BG: "BLACK"
+  DATASET: "PRIMIGEN"

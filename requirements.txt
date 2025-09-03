@@ -1,0 +1,12 @@
+torch
+torchvision
+timm
+transformers
+hydra-core>=1.2.0
+omegaconf>=2.2.0
+wandb
+pandas
+Pillow
+tqdm
+numpy
+peft
