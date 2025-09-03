@@ -33,9 +33,7 @@ hida-tune/
 ├── utils/
 │   ├── losses.py             # Loss function implementations
 │   └── ...                   # Other utilities
-├── configs/                  # Legacy config files (deprecated)
 ├── logs/                     # Training logs and checkpoints
-└── augmented_samples/        # Sample augmented images (for debugging)
 ```
 
 ## Configuration
