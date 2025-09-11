@@ -43,7 +43,7 @@ def evaluate_mochi(
     model,
     mochi_loader,
     device,
-    svm_repeats: int = 100,
+    svm_repeats: int = 50,
     train_fraction: float = 0.75,
     svm_C: float = 1.0,
     svm_max_iter: int = 1000,
