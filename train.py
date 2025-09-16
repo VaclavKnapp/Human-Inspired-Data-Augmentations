@@ -40,7 +40,7 @@ def get_loss_function(loss_cfg):
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
-def generate_dataset_if_needed(cfg):
+def generate_dataset_if_needed(cfg, exp_name):
     """Generate dataset CSV if needed based on configuration"""
     dataset_type = cfg.dataset_generation.dataset_type
     
@@ -57,8 +57,10 @@ def generate_dataset_if_needed(cfg):
     else:
         raise ValueError(f"Unknown dataset type: {dataset_type}")
     
-    # Create full output path
-    output_path = os.path.join("/datasets/hida/current", output_filename)
+    # Create experiment-specific directory and output path
+    exp_dir = os.path.join("/datasets/hida/current", exp_name)
+    os.makedirs(exp_dir, exist_ok=True)
+    output_path = os.path.join(exp_dir, output_filename)
     
     # Check if we should regenerate (for now, always generate)
     # In production, you might want to check timestamps or add a force_regenerate flag
@@ -115,7 +117,7 @@ def generate_dataset_if_needed(cfg):
     
     return output_path
 
-def generate_epoch_dataset(cfg, epoch, seed):
+def generate_epoch_dataset(cfg, epoch, seed, exp_name):
     """Generate a new dataset for a specific epoch"""
     dataset_type = cfg.dataset_generation.dataset_type
     
@@ -132,8 +134,11 @@ def generate_epoch_dataset(cfg, epoch, seed):
     else:
         raise ValueError(f"Unknown dataset type: {dataset_type}")
     
-    output_filename = f"{base_filename}_epoch{epoch}_seed{seed}.csv"
-    output_path = os.path.join("/datasets/hida/current", output_filename)
+    output_filename = f"{base_filename}_epoch{epoch}.csv"
+    # Create experiment-specific directory and output path
+    exp_dir = os.path.join("/datasets/hida/current", exp_name)
+    os.makedirs(exp_dir, exist_ok=True)
+    output_path = os.path.join(exp_dir, output_filename)
     
     logger.info(f"Generating epoch {epoch} dataset using {script_name}...")
     
@@ -207,11 +212,9 @@ def main(cfg: DictConfig) -> None:
     set_seed(cfg.system.random_seed)
     
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
-    # Generate dataset if needed
-    dataset_csv_path = generate_dataset_if_needed(cfg)
     
-    train_filters = cfg.dataset.train_dataset.filters or {}
-    val_filters = cfg.dataset.val_dataset.filters or {}
+    train_filters = cfg.splits.train_dataset.filters or {}
+    val_filters = cfg.splits.val_dataset.filters or {}
     
     train_filter_str = '&'.join([f'{key}={value}' for key, value in train_filters.items()])
     val_filter_str = '&'.join([f'{key}={value}' for key, value in val_filters.items()])
@@ -219,6 +222,9 @@ def main(cfg: DictConfig) -> None:
     exp_name += f'_train:{train_filter_str}_val:{val_filter_str}'
     if cfg.model.use_lora:
         exp_name += f'_lora_r{cfg.model.lora_r}_alpha{cfg.model.lora_alpha}_dropout{cfg.model.lora_dropout}_|{random.randint(1, 100)}|'
+    
+    # Generate dataset if needed (after exp_name is created)
+    dataset_csv_path = generate_dataset_if_needed(cfg, exp_name)
     
     checkpoint_dir = os.path.join(cfg.training.log_dir, exp_name, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -244,10 +250,10 @@ def main(cfg: DictConfig) -> None:
     backbone = model.module.backbone if hasattr(model, 'module') else model.backbone
     
     # Create dataset configs with updated paths
-    train_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.dataset.train_dataset)
+    train_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.splits.train_dataset)
     train_dataset_cfg.csv_path = dataset_csv_path
     
-    val_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.dataset.val_dataset) 
+    val_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.splits.val_dataset) 
     val_dataset_cfg.csv_path = dataset_csv_path
     
     # Add augmentation config to datasets
@@ -265,7 +271,7 @@ def main(cfg: DictConfig) -> None:
                              augmentation_config=None,  # No augmentation for validation
                              augmentation_enabled=False)
     
-    mochi_loader = build_loader(cfg.dataset.test_dataset, num_workers, batch_size=cfg.evaluation.batch_size, 
+    mochi_loader = build_loader(cfg.splits.test_dataset, num_workers, batch_size=cfg.evaluation.batch_size, 
                                transform=backbone.transform, num_gpus=1,
                                augmentation_config=None,  # No augmentation for test
                                augmentation_enabled=False)
@@ -300,13 +306,12 @@ def main(cfg: DictConfig) -> None:
     best_val_loss = float('inf')
 
     val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
-    exp_name_dir = f"/datasets/hida/current/{exp_name}"
-    os.makedirs(exp_name_dir, exist_ok=True)
+    
     for epoch in range(cfg.training.epochs):
         # Generate new dataset for each epoch if needed
         if cfg.dataset_generation.get("regenerate_per_epoch", False):
             seed = random.randint(1, 1000000)
-            epoch_dataset_path = generate_epoch_dataset(cfg, epoch, seed)
+            epoch_dataset_path = generate_epoch_dataset(cfg, epoch, seed, exp_name)
         else:
             epoch_dataset_path = dataset_csv_path
 

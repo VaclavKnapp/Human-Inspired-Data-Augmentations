@@ -9,7 +9,7 @@ import ast
 
 class MochiDataset(Dataset):
     def __init__(self, csv_path: str, transform=None, split=None):
-        self.root = "/datasets/hida/current/neurips_benchmark"
+        self.root = os.path.dirname(csv_path)
         self.data = pd.read_csv(csv_path)
         self.transform = transform
 

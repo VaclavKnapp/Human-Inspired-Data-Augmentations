@@ -10,7 +10,7 @@ dataset_generation:
   # - "hida": Uses create_csv.py (Shapegen + Primigen only)
   # - "hida_objaverse": Uses create_csv_w_Objaverse.py (Shapegen + Primigen + Objaverse)
   # - "objaverse": Uses create_csv_w_Objaverse.py (Objaverse only)
-  dataset_type: "hida_objaverse"
+  dataset_type: "hida"
   
   # Paths for dataset generation
   paths:
@@ -36,11 +36,11 @@ dataset_generation:
     objaverse_sim: "/datasets/hida/current/Objaverse_sim/object_similarities_objaverse.pkl"
   
   # Generation parameters
-  triplets_per_combo: 6666  # Number of triplets per dataset+background combination
+  triplets_per_combo: 200  # Number of triplets per dataset+background combination
   regenerate_per_epoch: true  # Regenerate dataset for each epoch (for data diversity)
   
   # Ratio distributions
-  shapegen_ratios: [0.15, 0.45, 0.40]  # [low, medium, high] similarity ratios
+  shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
   primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
   objaverse_ratios: [0.05, 0.20, 0.75]  # [low, medium, high] similarity ratios
   n_ratios: [0.40, 0.40, 0.20]  # [n2, n3, n4] complexity ratios for Primigen
@@ -57,7 +57,7 @@ system:
 # Training Configuration
 # =====================
 training:
-  batch_size: 32
+  batch_size: 16
   epochs: 50
   num_workers: 4
   log_dir: "./logs"
@@ -77,7 +77,7 @@ model:
   
   # LoRA Configuration
   use_lora: true
-  lora_r: 8
+  lora_r: 16
   lora_alpha: 8
   lora_dropout: 0.1
 
@@ -100,7 +100,7 @@ loss:
 # ======================
 optimizer:
   _target_: torch.optim.Adam
-  lr: 3e-6
+  lr: 2e-6
   weight_decay: 1e-4
   betas: [0.9, 0.999]
 
@@ -112,8 +112,12 @@ dataset:
   csv_path: "/datasets/hida/current/hida_dataset.csv"  # Will be dynamically set based on generation
   train_ratio: 0.95
   random_seed: 42
-  
-  # Dataset splits with filters
+  split: null  # Base split configuration, overridden by train/val/test datasets
+  filters: null  # Base filters configuration, overridden by train/val/test datasets
+
+# Dataset splits configuration
+# ============================
+splits:
   train_dataset:
     split: "train"
     filters: null  # Can be used to filter by BG, DATASET, etc. Example: {BG: "BLACK", DATASET: "SHAPEGEN"}
@@ -123,12 +127,9 @@ dataset:
     filters: null
   
   test_dataset:
-    _target_: datasets.hida_dataset.HIDADataset
-    csv_path: "/datasets/hida/current/mochi_dataset.csv"
+    _target_: datasets.mochi_dataset.MochiDataset
+    csv_path: "/datasets/hida/current/neurips_benchmark/benchmark.csv"
     split: null
-    filters: null
-    train_ratio: 1.0
-    random_seed: 42
 
 # Data Augmentation Configuration
 # ==============================
@@ -137,7 +138,7 @@ augmentation:
   enabled: true
   
   # Augmentation parameters
-  save_every_n: 1000  # Save augmented samples every N items for inspection
+  save_every_n: 10000  # Save augmented samples every N items for inspection
   save_dir: "./augmented_samples"  # Directory to save augmented samples
   
   # Individual augmentation parameters

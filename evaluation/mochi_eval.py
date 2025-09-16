@@ -1,41 +1,51 @@
 import torch
 import torch.distributed as dist
+import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
 
 from utils.training_utils import adjust_accuracy
 from sklearn.svm import LinearSVC
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
-def _pair_diffs_and_labels(feats_3, odd_idx):
+def _pair_diffs_and_labels(feats_n, odd_idx):
     """
-    feats_3: (3, D) tensor (CPU or CUDA)
-    odd_idx: int in {0,1,2}
+    feats_n: (n_images, D) tensor (CPU or CUDA)
+    odd_idx: int in {0, 1, ..., n_images-1}
     Returns:
-      X: (3, D) torch.Tensor of pairwise diffs [p_same, p_neg1, p_neg2]
-      y: (3,) torch.Tensor of labels [1, 0, 0]  (same=1, different=0)
+      X: (n_pairs, D) torch.Tensor of pairwise diffs
+      y: (n_pairs,) torch.Tensor of labels (same=1, different=0)
       pairs: list of index pairs corresponding to rows of X
     """
-    idxs = [0, 1, 2]
-    same_pair = [i for i in idxs if i != odd_idx]  # the two non-odd images
-    a, b = same_pair
-    # order each pair (low, high) for a consistent sign convention
-    a1, b1 = (a, b) if a < b else (b, a)
+    n_images = feats_n.shape[0]
+    idxs = list(range(n_images))
+    non_odd_idxs = [i for i in idxs if i != odd_idx]  # all non-odd images
+    
     X = []
+    y = []
     pairs = []
 
     def diff(i, j):
         i1, j1 = (i, j) if i < j else (j, i)
-        return feats_3[i1] - feats_3[j1], (i1, j1)
+        return feats_n[i1] - feats_n[j1], (i1, j1)
 
-    # 1 same, 2 different
-    d_same, p_same = diff(a, b)
-    X.append(d_same); pairs.append(p_same)
-    for neg in [a, b]:
-        d_neg, p_neg = diff(odd_idx, neg)
-        X.append(d_neg); pairs.append(p_neg)
+    # Generate all possible pairs and label them
+    for i in range(n_images):
+        for j in range(i + 1, n_images):
+            d, p = diff(i, j)
+            X.append(d)
+            pairs.append(p)
+            
+            # Label: 1 if both are non-odd (same), 0 if one is odd (different)
+            if i != odd_idx and j != odd_idx:
+                y.append(1)  # both are typical/same
+            else:
+                y.append(0)  # one is odd/different
 
     X = torch.stack(X, dim=0)
-    y = torch.tensor([1, 0, 0], dtype=torch.long, device=X.device)
+    y = torch.tensor(y, dtype=torch.long, device=X.device)
     return X, y, pairs
 
 @torch.no_grad()
@@ -43,10 +53,10 @@ def evaluate_mochi(
     model,
     mochi_loader,
     device,
-    svm_repeats: int = 50,
-    train_fraction: float = 0.75,
+    svm_repeats: int = 50,  # n_permutations in reference
+    train_fraction: float = 0.75,  # subset_fraction in reference
     svm_C: float = 1.0,
-    svm_max_iter: int = 1000,
+    svm_max_iter: int = 5000,
 ):
     """
     Computes BOTH:
@@ -72,16 +82,15 @@ def evaluate_mochi(
     for images, dataset, condition, oddity_indices in tqdm(mochi_loader, desc='MOCHI: extract & cosine'):
         images = images.to(device)
         b_actual, n_images, c, h, w = images.shape
-        assert n_images == 3, "MOCHI oddity trials should have exactly 3 images."
 
         images_flat = images.view(-1, c, h, w)
-        feats_flat = model(images_flat)                   # (B*3, D)
+        feats_flat = model(images_flat)                   # (B*n_images, D)
         D = feats_flat.shape[-1]
-        feats = feats_flat.view(b_actual, n_images, D)    # (B,3,D)
+        feats = feats_flat.view(b_actual, n_images, D)    # (B,n_images,D)
 
         # --- cosine baseline ---
         feats_norm = feats / feats.norm(dim=2, keepdim=True).clamp_min(1e-6)
-        sim_mats = torch.bmm(feats_norm, feats_norm.transpose(1, 2))  # (B,3,3)
+        sim_mats = torch.bmm(feats_norm, feats_norm.transpose(1, 2))  # (B,n_images,n_images)
 
         diag = torch.eye(n_images, device=device).unsqueeze(0).expand(b_actual, -1, -1)
         sim_no_diag = sim_mats - diag
@@ -103,7 +112,7 @@ def evaluate_mochi(
 
             # cache raw (unnormalized) features for SVM readout on CPU
             cache_by_condition[cond_name].append({
-                "feats": feats[i].detach().cpu().float(),   # (3,D)
+                "feats": feats[i].detach().cpu().float(),   # (n_images,D)
                 "odd": int(oddity_indices[i]),
             })
 
@@ -125,81 +134,101 @@ def evaluate_mochi(
         acc_per_condition_cos = {k: v / total_per_condition[k] for k, v in acc_per_condition_cos.items()}
 
     # --------------------------
-    # linear SVM (per condition, repeated resampling)
+    # linear SVM (reference implementation approach - trial by trial)
     # --------------------------
-    rng = torch.Generator().manual_seed(0)  # torch RNG for indices; scikit-learn uses its own RNG
-    sd_correct_sum = 0.0
-    sd_total = 0
-    acc_per_condition_sd = {}
-
-    for cond_name, triplets in tqdm(cache_by_condition.items(), desc='MOCHI: same–different SVM'):
-        n_trials = len(triplets)
-        if n_trials < 4:
-            # too few triplets to do proper resampling; fall back to chance-normalized 0
-            # (or you could skip / warn)
-            acc_per_condition_sd[cond_name] = 0.0
-            sd_total += n_trials
+    np.random.seed(42)  # for reproducible random subsets
+    
+    # Collect all trials with their metadata
+    all_trials = []
+    for cond_name, trials in cache_by_condition.items():
+        for trial in trials:
+            trial['condition'] = cond_name
+            all_trials.append(trial)
+    
+    # Store individual trial results for aggregation
+    trial_results = []
+    acc_per_condition_sd = defaultdict(list)
+    
+    # Process each individual trial (like reference implementation)
+    for trial_idx, test_trial in enumerate(tqdm(all_trials, desc='MOCHI: same–different SVM')):
+        test_feats = test_trial["feats"]  # (n_images, D)
+        test_odd = test_trial["odd"]
+        test_condition = test_trial["condition"]
+        
+        # Generate test pairs and labels for this trial
+        X_test, y_test, test_pairs = _pair_diffs_and_labels(test_feats, test_odd)
+        
+        # Collect training data from all other trials in SAME condition
+        train_trials = [trial for trial in all_trials 
+                       if trial["condition"] == test_condition and trial is not test_trial]
+        
+        if not train_trials:  # Skip if no training data in same condition
             continue
-
-        # per-condition stats
-        cond_acc_sum = 0.0
-
-        # iterate over target triplets (leave-one-out style; each with repeated resampling)
-        for t_idx in range(n_trials):
-            feats_t = triplets[t_idx]["feats"]  # (3,D)
-            odd_t = triplets[t_idx]["odd"]
-
-            # build three test pair diffs for triplet T
-            X_test, _, pairs = _pair_diffs_and_labels(feats_t, odd_t)  # (3,D), labels not needed
-
-            # collect correctness over repeats
-            corrects = []
-
-            for _ in range(svm_repeats):
-                # sample training triplets from same condition, excluding T
-                other_idxs = [i for i in range(n_trials) if i != t_idx]
-                n_train = max(1, int(round(train_fraction * len(other_idxs))))
-                # torch multinomial without replacement for reproducibility
-                perm = torch.randperm(len(other_idxs), generator=rng).tolist()
-                train_idxs = [other_idxs[i] for i in perm[:n_train]]
-
-                # build training set (difference vectors + labels)
-                X_train_list, y_train_list = [], []
-                for i in train_idxs:
-                    feats_i = triplets[i]["feats"]
-                    odd_i = triplets[i]["odd"]
-                    X_i, y_i, _ = _pair_diffs_and_labels(feats_i, odd_i)
-                    X_train_list.append(X_i)
-                    y_train_list.append(y_i)
-
-                X_train = torch.cat(X_train_list, dim=0).cpu().numpy()
-                y_train = torch.cat(y_train_list, dim=0).cpu().numpy()
-
-                # fit linear SVM (same=1, different=0)
-                clf = LinearSVC(C=svm_C, class_weight='balanced', max_iter=svm_max_iter)
-                clf.fit(X_train, y_train)
-
-                # test: score the 3 pairs, pick the most "same" pair (highest decision value)
-                scores = clf.decision_function(X_test.cpu().numpy())  # shape (3,)
-                best_pair_idx = int(scores.argmax())
-                best_pair = pairs[best_pair_idx]  # (i, j) of the predicted "same" pair
-
-                # infer predicted odd index = the index not in best_pair
-                all_idx = {0, 1, 2}
-                pred_odd = list(all_idx - set(best_pair))[0]
-                corrects.append(1.0 if pred_odd == odd_t else 0.0)
-
-            # mean correctness across repeats, then chance-normalize
-            mean_correct = float(sum(corrects) / len(corrects))
-            acc_t = adjust_accuracy(torch.tensor([mean_correct]), 1 / 3).item()
-            cond_acc_sum += acc_t
-
-        cond_acc = cond_acc_sum / n_trials
-        acc_per_condition_sd[cond_name] = cond_acc
-        sd_correct_sum += cond_acc * n_trials
-        sd_total += n_trials
-
-    samediff_overall = sd_correct_sum / max(1, sd_total)
+            
+        # Generate all training pairs from same condition
+        X_train_all = []
+        y_train_all = []
+        
+        for train_trial in train_trials:
+            train_feats = train_trial["feats"]
+            train_odd = train_trial["odd"]
+            X_train_trial, y_train_trial, _ = _pair_diffs_and_labels(train_feats, train_odd)
+            X_train_all.append(X_train_trial)
+            y_train_all.append(y_train_trial)
+        
+        if not X_train_all:  # Skip if no training pairs
+            continue
+            
+        X_train_full = torch.cat(X_train_all, dim=0).cpu().numpy()
+        y_train_full = torch.cat(y_train_all, dim=0).cpu().numpy()
+        
+        # Multiple permutations with random subsets (like reference: n_permutations = 100)
+        trial_accuracies = []
+        
+        for _ in range(svm_repeats):
+            # Random subset of training data (like reference: subset_fraction = 0.75)
+            n_train_samples = len(X_train_full)
+            subset_size = max(1, int(train_fraction * n_train_samples))
+            
+            random_indices = np.random.permutation(n_train_samples)[:subset_size]
+            X_train_subset = X_train_full[random_indices]
+            y_train_subset = y_train_full[random_indices]
+            
+            # Train SVM (exactly like reference)
+            clf = make_pipeline(StandardScaler(),
+                              SVC(class_weight='balanced', probability=True))
+            clf.fit(X_train_subset, y_train_subset)
+            
+            # Predict probabilities on test trial
+            y_hat = clf.predict_proba(X_test.cpu().numpy())
+            prob_different = y_hat[:, 0]  # P(different)
+            
+            # Compute average "different" probability for each image (like reference)
+            n_images = test_feats.shape[0]
+            diff_scores = []
+            
+            for img_idx in range(n_images):
+                # Find pairs involving this image
+                pair_probs = [prob_different[pair_idx] for pair_idx, (i, j) in enumerate(test_pairs)
+                             if i == img_idx or j == img_idx]
+                avg_diff_prob = np.mean(pair_probs) if pair_probs else 0.0
+                diff_scores.append(avg_diff_prob)
+            
+            # Predict odd image (highest "different" probability)
+            pred_odd = np.argmax(diff_scores)
+            accuracy = 1.0 if pred_odd == test_odd else 0.0
+            trial_accuracies.append(accuracy)
+        
+        # Average accuracy for this trial across all permutations
+        trial_mean_acc = np.mean(trial_accuracies)
+        trial_results.append(trial_mean_acc)
+        acc_per_condition_sd[test_condition].append(trial_mean_acc)
+    
+    # Aggregate results by condition
+    acc_per_condition_sd = {cond: np.mean(accs) for cond, accs in acc_per_condition_sd.items()}
+    
+    # Overall SVM accuracy
+    samediff_overall = np.mean(trial_results) if trial_results else 0.0
 
     metrics = {
         'mochi_cosine_overall': cosine_overall,
