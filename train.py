@@ -271,7 +271,7 @@ def main(cfg: DictConfig) -> None:
                              augmentation_config=None,  # No augmentation for validation
                              augmentation_enabled=False)
     
-    mochi_loader = build_loader(cfg.splits.test_dataset, num_workers, batch_size=cfg.evaluation.batch_size, 
+    mochi_loader = build_loader(cfg.splits.test_dataset, num_workers, batch_size=1,
                                transform=backbone.transform, num_gpus=1,
                                augmentation_config=None,  # No augmentation for test
                                augmentation_enabled=False)

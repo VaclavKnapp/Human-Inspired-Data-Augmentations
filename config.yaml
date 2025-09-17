@@ -36,7 +36,7 @@ dataset_generation:
     objaverse_sim: "/datasets/hida/current/Objaverse_sim/object_similarities_objaverse.pkl"
   
   # Generation parameters
-  triplets_per_combo: 200  # Number of triplets per dataset+background combination
+  triplets_per_combo: 10000  # Number of triplets per dataset+background combination
   regenerate_per_epoch: true  # Regenerate dataset for each epoch (for data diversity)
   
   # Ratio distributions
@@ -57,8 +57,8 @@ system:
 # Training Configuration
 # =====================
 training:
-  batch_size: 16
-  epochs: 50
+  batch_size: 32
+  epochs: 40
   num_workers: 4
   log_dir: "./logs"
 
@@ -68,7 +68,7 @@ model:
   # Backbone configuration
   backbone:
     _target_: models.dinov2.DINOv2
-    checkpoint: "vit_large_patch14_dinov2"  # Options: vit_base_patch14_dinov2, vit_large_patch14_dinov2
+    checkpoint: "vit_large_patch14_reg4_dinov2"  # Options: vit_base_patch14_dinov2, vit_large_patch14_dinov2
     output: "cls"
     layer: -1
     return_multilayer: false
@@ -130,6 +130,8 @@ splits:
     _target_: datasets.mochi_dataset.MochiDataset
     csv_path: "/datasets/hida/current/neurips_benchmark/benchmark.csv"
     split: null
+    sample_percentage: ${evaluation.mochi_sampling.sample_percentage}
+    sample_seed: ${evaluation.mochi_sampling.seed}
 
 # Data Augmentation Configuration
 # ==============================
@@ -138,7 +140,7 @@ augmentation:
   enabled: true
   
   # Augmentation parameters
-  save_every_n: 10000  # Save augmented samples every N items for inspection
+  save_every_n: 100000  # Save augmented samples every N items for inspection
   save_dir: "./augmented_samples"  # Directory to save augmented samples
   
   # Individual augmentation parameters
@@ -164,8 +166,14 @@ augmentation:
     std_max: 0.03
     probability: 0.5
 
-# Evaluation Configuration  
+# Evaluation Configuration
 # =======================
 evaluation:
   batch_size: 70  # Batch size for evaluation
   num_workers: 4
+
+  # MOCHI sampling configuration (percentage of each category to use)
+  mochi_sampling:
+    enabled: true  # Set to true to enable sampling
+    sample_percentage: 0.5  # Percentage of each category to sample (0.0 to 1.0)
+    seed: 42  # Random seed for reproducible sampling
