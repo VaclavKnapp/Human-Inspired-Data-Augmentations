@@ -1,5 +1,5 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=1 
+export CUDA_VISIBLE_DEVICES=4 
 
 python train.py

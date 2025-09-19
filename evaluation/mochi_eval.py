@@ -10,50 +10,74 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-def _pair_diffs_and_labels(feats_n, odd_idx):
+
+def generate_delta_vectors(trials, features, oddities, images):
     """
-    feats_n: (n_images, D) tensor (CPU or CUDA)
-    odd_idx: int in {0, 1, ..., n_images-1}
-    Returns:
-      X: (n_pairs, D) torch.Tensor of pairwise diffs
-      y: (n_pairs,) torch.Tensor of labels (same=1, different=0)
-      pairs: list of index pairs corresponding to rows of X
+    Generate delta vectors exactly like reference implementation
     """
-    n_images = feats_n.shape[0]
-    idxs = list(range(n_images))
-    non_odd_idxs = [i for i in idxs if i != odd_idx]  # all non-odd images
-    
-    X = []
-    y = []
-    pairs = []
+    def delta(a, b, xtype='diff'):
+        if xtype == 'diff':
+            x = a - b
+        elif xtype == 'abs':
+            x = np.array(np.abs(a - b))
+        elif xtype == 'sqrt':
+            x = np.sqrt(np.array(np.abs(a - b)))
+        elif xtype == 'sqr':
+            x = (np.array(np.abs(a - b)))**2
+        elif xtype == 'product':
+            x = a * b
+        return x
 
-    def diff(i, j):
-        i1, j1 = (i, j) if i < j else (j, i)
-        return feats_n[i1] - feats_n[j1], (i1, j1)
+    trial_markers = []
+    deltas = []
+    labels = []
 
-    # Generate all possible pairs and label them
-    for i in range(n_images):
-        for j in range(i + 1, n_images):
-            d, p = diff(i, j)
-            X.append(d)
-            pairs.append(p)
-            
-            # Label: 1 if both are non-odd (same), 0 if one is odd (different)
-            if i != odd_idx and j != odd_idx:
-                y.append(1)  # both are typical/same
-            else:
-                y.append(0)  # one is odd/different
+    for i_trial in trials:
+        # Get indices for this trial
+        trial_indices = [images[key] for key in images.keys() if key.split('-')[0] == i_trial]
+        i_features = features[trial_indices]
+        oddity_index = oddities[i_trial]
 
-    X = torch.stack(X, dim=0)
-    y = torch.tensor(y, dtype=torch.long, device=X.device)
-    return X, y, pairs
+        pairs = []  # Store pairs for this trial
+
+        for i in range(len(i_features)):
+            for j in range(i+1, len(i_features)):
+                i_delta = delta(i_features[i], i_features[j])
+                deltas.append(i_delta)
+                trial_markers.append(i_trial)
+                pairs.append((i, j))
+
+                # Label: 0 if one is odd (different), 1 if both are same
+                if (i == oddity_index) or (j == oddity_index):
+                    labels.append(0)  # different
+                else:
+                    labels.append(1)  # same
+
+    # Create location mapping for the last trial (used for prediction)
+    all_inds = np.array(range(len(i_features)))
+    pairs_array = np.array(pairs)
+    location_of_indices = {}
+    for i in all_inds:
+        # Find pairs involving image i
+        mask = (pairs_array == i).any(axis=1)
+        location_of_indices[i] = np.where(mask)[0]
+
+    info = {
+        'deltas': np.array(deltas),
+        'labels': np.array(labels),
+        'trials': trial_markers,
+        'inds': all_inds,
+        'locs': location_of_indices
+    }
+
+    return info
 
 @torch.no_grad()
 def evaluate_mochi(
     model,
     mochi_loader,
     device,
-    svm_repeats: int = 50,  # n_permutations in reference
+    svm_repeats: int = 100,  # n_permutations like reference
     train_fraction: float = 0.75,  # subset_fraction in reference
     svm_C: float = 1.0,
     svm_max_iter: int = 5000,
@@ -61,7 +85,7 @@ def evaluate_mochi(
     """
     Computes BOTH:
       1) cosine-argmin oddity (zero-shot)
-      2) same–different linear SVM readout (per-condition, leave-one-triplet-out with repeated resampling)
+      2) same–different linear SVM readout (GLOBAL cross-condition training like reference)
 
     Returns a dict with:
       - mochi_cosine_overall, mochi_samediff_overall
@@ -134,99 +158,110 @@ def evaluate_mochi(
         acc_per_condition_cos = {k: v / total_per_condition[k] for k, v in acc_per_condition_cos.items()}
 
     # --------------------------
-    # linear SVM (reference implementation approach - trial by trial)
+    # linear SVM (reference implementation approach - CONDITION-SPECIFIC TRAINING)
     # --------------------------
     np.random.seed(42)  # for reproducible random subsets
-    
-    # Collect all trials with their metadata
-    all_trials = []
-    for cond_name, trials in cache_by_condition.items():
-        for trial in trials:
-            trial['condition'] = cond_name
-            all_trials.append(trial)
-    
+
     # Store individual trial results for aggregation
     trial_results = []
     acc_per_condition_sd = defaultdict(list)
-    
-    # Process each individual trial (like reference implementation)
-    for trial_idx, test_trial in enumerate(tqdm(all_trials, desc='MOCHI: same–different SVM')):
-        test_feats = test_trial["feats"]  # (n_images, D)
-        test_odd = test_trial["odd"]
-        test_condition = test_trial["condition"]
-        
-        # Generate test pairs and labels for this trial
-        X_test, y_test, test_pairs = _pair_diffs_and_labels(test_feats, test_odd)
-        
-        # Collect training data from all other trials in SAME condition
-        train_trials = [trial for trial in all_trials 
-                       if trial["condition"] == test_condition and trial is not test_trial]
-        
-        if not train_trials:  # Skip if no training data in same condition
-            continue
-            
-        # Generate all training pairs from same condition
-        X_train_all = []
-        y_train_all = []
-        
-        for train_trial in train_trials:
-            train_feats = train_trial["feats"]
-            train_odd = train_trial["odd"]
-            X_train_trial, y_train_trial, _ = _pair_diffs_and_labels(train_feats, train_odd)
-            X_train_all.append(X_train_trial)
-            y_train_all.append(y_train_trial)
-        
-        if not X_train_all:  # Skip if no training pairs
-            continue
-            
-        X_train_full = torch.cat(X_train_all, dim=0).cpu().numpy()
-        y_train_full = torch.cat(y_train_all, dim=0).cpu().numpy()
-        
-        # Multiple permutations with random subsets (like reference: n_permutations = 100)
-        trial_accuracies = []
-        
-        for _ in range(svm_repeats):
-            # Random subset of training data (like reference: subset_fraction = 0.75)
-            n_train_samples = len(X_train_full)
-            subset_size = max(1, int(train_fraction * n_train_samples))
-            
-            random_indices = np.random.permutation(n_train_samples)[:subset_size]
-            X_train_subset = X_train_full[random_indices]
-            y_train_subset = y_train_full[random_indices]
-            
-            # Train SVM (exactly like reference)
-            clf = make_pipeline(StandardScaler(),
-                              SVC(class_weight='balanced', probability=True))
-            clf.fit(X_train_subset, y_train_subset)
-            
-            # Predict probabilities on test trial
-            y_hat = clf.predict_proba(X_test.cpu().numpy())
-            prob_different = y_hat[:, 0]  # P(different)
-            
-            # Compute average "different" probability for each image (like reference)
-            n_images = test_feats.shape[0]
-            diff_scores = []
-            
-            for img_idx in range(n_images):
-                # Find pairs involving this image
-                pair_probs = [prob_different[pair_idx] for pair_idx, (i, j) in enumerate(test_pairs)
-                             if i == img_idx or j == img_idx]
-                avg_diff_prob = np.mean(pair_probs) if pair_probs else 0.0
-                diff_scores.append(avg_diff_prob)
-            
-            # Predict odd image (highest "different" probability)
-            pred_odd = np.argmax(diff_scores)
-            accuracy = 1.0 if pred_odd == test_odd else 0.0
-            trial_accuracies.append(accuracy)
-        
-        # Average accuracy for this trial across all permutations
-        trial_mean_acc = np.mean(trial_accuracies)
-        trial_results.append(trial_mean_acc)
-        acc_per_condition_sd[test_condition].append(trial_mean_acc)
-    
+
+    print("Processing each condition for SVM evaluation...")
+    # iterate through each condition (exactly like notebook)
+    for cond_name, trials_in_condition in tqdm(cache_by_condition.items(), desc='MOCHI: same–different SVM'):
+
+        # Convert cached features to reference format for this condition only
+        features = []
+        oddities = {}
+        images = {}
+        feature_idx = 0
+
+        for trial_idx, trial in enumerate(trials_in_condition):
+            trial_id = f"{trial_idx}"  # Simple trial ID within condition
+            oddities[trial_id] = trial["odd"]
+            trial_feats = trial["feats"].numpy()  # (n_images, D)
+
+            # Store features and create image mapping
+            for img_idx in range(trial_feats.shape[0]):
+                features.append(trial_feats[img_idx].flatten())
+                images[f'{trial_id}-{img_idx}'] = feature_idx
+                feature_idx += 1
+
+        features = np.array(features)
+        trials = list(oddities.keys())
+
+        # Generate delta vectors WITHIN this condition only
+        diffs = generate_delta_vectors(trials, features, oddities, images)
+
+        # Process each trial in this condition
+        for trial_idx, trial in enumerate(trials_in_condition):
+            i_trial = str(trial_idx)
+            i_oddity_index = trial["odd"]
+
+            # Extract indices and labels for training SVM (OTHER TRIALS IN SAME CONDITION)
+            train_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name != i_trial]
+
+            if not train_indices:  # Skip if no training data
+                continue
+
+            # vectors for the difference between each image vector
+            X_train = diffs['deltas'][train_indices, :]
+            # labels for whether each vector was 'same' or 'different'
+            y_train = diffs['labels'][train_indices]
+
+            # Extract indices and labels for testing SVM
+            test_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name == i_trial]
+
+            if not test_indices:  # Skip if no test data
+                continue
+
+            # vectors for the difference between each image vector
+            X_test = diffs['deltas'][test_indices, :]
+
+            # for each iteration use X% of the available trials
+            len_subset = int(train_fraction * len(X_train))
+
+            # prep for each iteration
+            choices = []
+
+            for _ in range(svm_repeats):  # n_permutations = 100 like reference
+                # identify random subset of delta vectors to train on
+                random_subset = np.random.permutation(len(X_train))[:len_subset]
+
+                # define model to train a linear readout
+                clf = make_pipeline(StandardScaler(),
+                                  SVC(class_weight='balanced', probability=True))
+                # fit training data
+                clf.fit(X_train[random_subset, :], y_train[random_subset])
+                # predict performance on this trial
+                y_hat = clf.predict_proba(X_test)
+
+                # identify which image has the highest probability of being different
+                prob_different = y_hat[:, 0] if y_hat.shape[1] > 1 else 1 - y_hat[:, 0]  # P(different)
+
+                # Calculate per-image difference scores exactly like notebook
+                n_images = trial["feats"].shape[0]
+                i_diffs = []
+                for i in diffs['inds']:
+                    # Get pairs involving this image for the current trial
+                    pair_probs = [prob_different[pair_idx] for pair_idx in diffs['locs'][i]
+                                 if pair_idx < len(prob_different)]
+                    avg_diff_prob = np.mean(pair_probs) if pair_probs else 0.0
+                    i_diffs.append(avg_diff_prob)
+
+                # determine whether the model-selected oddity matches ground truth
+                i_trial_accuracy = i_oddity_index == np.argmax(i_diffs)
+                # save
+                choices.append(i_trial_accuracy)
+
+            # Average accuracy for this trial across all permutations
+            trial_mean_acc = np.mean(choices)
+            trial_results.append(trial_mean_acc)
+            acc_per_condition_sd[cond_name].append(trial_mean_acc)
+
     # Aggregate results by condition
     acc_per_condition_sd = {cond: np.mean(accs) for cond, accs in acc_per_condition_sd.items()}
-    
+
     # Overall SVM accuracy
     samediff_overall = np.mean(trial_results) if trial_results else 0.0
 
@@ -241,4 +276,3 @@ def evaluate_mochi(
         metrics[f'mochi_samediff/{cond}'] = acc
 
     return metrics
-

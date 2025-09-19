@@ -51,9 +51,18 @@ def generate_dataset_if_needed(cfg, exp_name):
     elif dataset_type == "hida_objaverse":
         output_filename = "hida_objaverse_dataset.csv"
         script_name = "create_csv_w_Objaverse.py"
+    elif dataset_type == "hida_co3d":
+        output_filename = "hida_co3d_dataset.csv"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "objaverse":
         output_filename = "objaverse_dataset.csv"
         script_name = "create_csv_w_Objaverse.py"
+    elif dataset_type == "co3d":
+        output_filename = "co3d_dataset.csv"
+        script_name = "create_csv_w_Objaverse_co3D.py"
+    elif dataset_type == "objaverse_co3d":
+        output_filename = "objaverse_co3d_dataset.csv"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     else:
         raise ValueError(f"Unknown dataset type: {dataset_type}")
     
@@ -74,11 +83,11 @@ def generate_dataset_if_needed(cfg, exp_name):
         "--seed", str(cfg.dataset_generation.seed),
         "--triplets-per-combo", str(cfg.dataset_generation.triplets_per_combo)
     ]
-    
-    # Add paths based on dataset type
-    if dataset_type in ["hida", "hida_objaverse"]:
-        # Add Shapegen and Primigen paths
-        paths = cfg.dataset_generation.paths
+
+    paths = cfg.dataset_generation.paths
+
+    if script_name == "create_csv.py":
+        # Original script - only Shapegen and Primigen
         cmd.extend([
             "--shapegen-black", paths.shapegen_black,
             "--shapegen-random", paths.shapegen_random,
@@ -95,17 +104,51 @@ def generate_dataset_if_needed(cfg, exp_name):
         cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
         cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
-    
-    if dataset_type in ["hida_objaverse", "objaverse"]:
-        # Add Objaverse paths
-        paths = cfg.dataset_generation.paths
+    else:
+        # Extended script - all paths need to be provided
         cmd.extend([
+            "--shapegen-black", paths.shapegen_black,
+            "--shapegen-random", paths.shapegen_random,
+            "--shapegen-white", paths.shapegen_white,
+            "--shapegen-black-sim", paths.shapegen_black_sim,
+            "--shapegen-random-sim", paths.shapegen_random_sim,
+            "--shapegen-white-sim", paths.shapegen_white_sim,
+            "--shapegen-camera", paths.shapegen_camera,
+            "--primigen-black", paths.primigen_black,
+            "--primigen-random", paths.primigen_random,
+            "--primigen-white", paths.primigen_white,
+            "--primigen-camera", paths.primigen_camera,
             "--objaverse-black", paths.objaverse_black,
             "--objaverse-random", paths.objaverse_random,
             "--objaverse-white", paths.objaverse_white,
             "--objaverse-sim", paths.objaverse_sim,
+            "--co3d-black", paths.co3d_black,
+            "--co3d-random", paths.co3d_random,
+            "--co3d-white", paths.co3d_white,
+            "--co3d-sim", paths.co3d_sim,
         ])
+        cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
+        cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--objaverse-ratios"] + [str(r) for r in cfg.dataset_generation.objaverse_ratios])
+        cmd.extend(["--co3d-ratios"] + [str(r) for r in cfg.dataset_generation.co3d_ratios])
+        cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
+
+        # Add dataset inclusion flags based on dataset_type
+        if dataset_type == "hida_objaverse":
+            # Include Shapegen + Primigen + Objaverse, exclude CO3D
+            cmd.extend(["--no-co3d"])
+        elif dataset_type == "hida_co3d":
+            # Include Shapegen + Primigen + CO3D, exclude Objaverse
+            cmd.extend(["--no-objaverse"])
+        elif dataset_type == "objaverse":
+            # Include only Objaverse, exclude Shapegen + Primigen + CO3D
+            cmd.extend(["--no-shapegen", "--no-primigen", "--no-co3d"])
+        elif dataset_type == "co3d":
+            # Include only CO3D, exclude Shapegen + Primigen + Objaverse
+            cmd.extend(["--no-shapegen", "--no-primigen", "--no-objaverse"])
+        elif dataset_type == "objaverse_co3d":
+            # Include Objaverse + CO3D, exclude Shapegen + Primigen
+            cmd.extend(["--no-shapegen", "--no-primigen"])
     
     # Run the dataset generation script
     try:
@@ -128,9 +171,18 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
     elif dataset_type == "hida_objaverse":
         base_filename = "hida_objaverse_dataset"
         script_name = "create_csv_w_Objaverse.py"
+    elif dataset_type == "hida_co3d":
+        base_filename = "hida_co3d_dataset"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "objaverse":
         base_filename = "objaverse_dataset"
         script_name = "create_csv_w_Objaverse.py"
+    elif dataset_type == "co3d":
+        base_filename = "co3d_dataset"
+        script_name = "create_csv_w_Objaverse_co3D.py"
+    elif dataset_type == "objaverse_co3d":
+        base_filename = "objaverse_co3d_dataset"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     else:
         raise ValueError(f"Unknown dataset type: {dataset_type}")
     
@@ -149,10 +201,11 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
         "--seed", str(seed),
         "--triplets-per-combo", str(cfg.dataset_generation.triplets_per_combo)
     ]
-    
-    # Add paths based on dataset type
-    if dataset_type in ["hida", "hida_objaverse"]:
-        paths = cfg.dataset_generation.paths
+
+    paths = cfg.dataset_generation.paths
+
+    if script_name == "create_csv.py":
+        # Original script - only Shapegen and Primigen
         cmd.extend([
             "--shapegen-black", paths.shapegen_black,
             "--shapegen-random", paths.shapegen_random,
@@ -169,16 +222,51 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
         cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
         cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
-    
-    if dataset_type in ["hida_objaverse", "objaverse"]:
-        paths = cfg.dataset_generation.paths
+    else:
+        # Extended script - all paths need to be provided
         cmd.extend([
+            "--shapegen-black", paths.shapegen_black,
+            "--shapegen-random", paths.shapegen_random,
+            "--shapegen-white", paths.shapegen_white,
+            "--shapegen-black-sim", paths.shapegen_black_sim,
+            "--shapegen-random-sim", paths.shapegen_random_sim,
+            "--shapegen-white-sim", paths.shapegen_white_sim,
+            "--shapegen-camera", paths.shapegen_camera,
+            "--primigen-black", paths.primigen_black,
+            "--primigen-random", paths.primigen_random,
+            "--primigen-white", paths.primigen_white,
+            "--primigen-camera", paths.primigen_camera,
             "--objaverse-black", paths.objaverse_black,
             "--objaverse-random", paths.objaverse_random,
             "--objaverse-white", paths.objaverse_white,
             "--objaverse-sim", paths.objaverse_sim,
-            ])
+            "--co3d-black", paths.co3d_black,
+            "--co3d-random", paths.co3d_random,
+            "--co3d-white", paths.co3d_white,
+            "--co3d-sim", paths.co3d_sim,
+        ])
+        cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
+        cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--objaverse-ratios"] + [str(r) for r in cfg.dataset_generation.objaverse_ratios])
+        cmd.extend(["--co3d-ratios"] + [str(r) for r in cfg.dataset_generation.co3d_ratios])
+        cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
+
+        # Add dataset inclusion flags based on dataset_type
+        if dataset_type == "hida_objaverse":
+            # Include Shapegen + Primigen + Objaverse, exclude CO3D
+            cmd.extend(["--no-co3d"])
+        elif dataset_type == "hida_co3d":
+            # Include Shapegen + Primigen + CO3D, exclude Objaverse
+            cmd.extend(["--no-objaverse"])
+        elif dataset_type == "objaverse":
+            # Include only Objaverse, exclude Shapegen + Primigen + CO3D
+            cmd.extend(["--no-shapegen", "--no-primigen", "--no-co3d"])
+        elif dataset_type == "co3d":
+            # Include only CO3D, exclude Shapegen + Primigen + Objaverse
+            cmd.extend(["--no-shapegen", "--no-primigen", "--no-objaverse"])
+        elif dataset_type == "objaverse_co3d":
+            # Include Objaverse + CO3D, exclude Shapegen + Primigen
+            cmd.extend(["--no-shapegen", "--no-primigen"])
     
     # Run the dataset generation script
     try:

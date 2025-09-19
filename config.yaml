@@ -6,10 +6,13 @@
 # Dataset Generation Configuration
 # ================================
 dataset_generation:
-  # Dataset type: "hida", "hida_objaverse", or "objaverse" 
+  # Dataset type options:
   # - "hida": Uses create_csv.py (Shapegen + Primigen only)
   # - "hida_objaverse": Uses create_csv_w_Objaverse.py (Shapegen + Primigen + Objaverse)
+  # - "hida_co3d": Uses create_csv_w_Objaverse_co3D.py (Shapegen + Primigen + CO3D)
   # - "objaverse": Uses create_csv_w_Objaverse.py (Objaverse only)
+  # - "co3d": Uses create_csv_w_Objaverse_co3D.py (CO3D only)
+  # - "objaverse_co3d": Uses create_csv_w_Objaverse_co3D.py (Objaverse + CO3D only)
   dataset_type: "hida"
   
   # Paths for dataset generation
@@ -31,9 +34,15 @@ dataset_generation:
     
     # Objaverse paths (used only when dataset_type includes "objaverse")
     objaverse_black: "/datasets/hida/current/Objaverse_segmented_black"
-    objaverse_random: "/datasets/hida/current/Objaverse_segmented_random" 
+    objaverse_random: "/datasets/hida/current/Objaverse_segmented_random"
     objaverse_white: "/datasets/hida/current/Objaverse_segmented_white"
     objaverse_sim: "/datasets/hida/current/Objaverse_sim/object_similarities_objaverse.pkl"
+
+    # CO3D paths (used only when dataset_type includes "co3d")
+    co3d_black: "/datasets/hida/current/co3D_segmented_black"
+    co3d_random: "/datasets/hida/current/co3D_segmented_random"
+    co3d_white: "/datasets/hida/current/co3D_segmented_white"
+    co3d_sim: "/datasets/hida/current/co3D_sim/sequence_similarities_co3d.pkl"
   
   # Generation parameters
   triplets_per_combo: 10000  # Number of triplets per dataset+background combination
@@ -43,7 +52,8 @@ dataset_generation:
   shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
   primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
   objaverse_ratios: [0.05, 0.20, 0.75]  # [low, medium, high] similarity ratios
-  n_ratios: [0.40, 0.40, 0.20]  # [n2, n3, n4] complexity ratios for Primigen
+  co3d_ratios: [0.20, 0.45, 0.35]      # [low, medium, high] similarity ratios
+  n_ratios: [0.40, 0.40, 0.20]         # [n2, n3, n4] complexity ratios for Primigen
   
   # Random seed for reproducible dataset generation
   seed: 42
@@ -57,7 +67,7 @@ system:
 # Training Configuration
 # =====================
 training:
-  batch_size: 32
+  batch_size: 16
   epochs: 40
   num_workers: 4
   log_dir: "./logs"
