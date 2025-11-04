@@ -245,10 +245,10 @@ def load_similarity_data(similarity_file: str):
     try:
         with open(similarity_file, 'rb') as f:
             data = pickle.load(f)
-        print(f"✅ Loaded similarity data for {len(data)} items")
+        print(f"Loaded similarity data for {len(data)} items")
         return data
     except Exception as e:
-        print(f"❌ Error loading similarity data: {e}")
+        print(f"Error loading similarity data: {e}")
         return {}
 
 def get_shapegen_structure(base_path: str):
@@ -452,12 +452,12 @@ def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path
     # Load similarity data and structure
     similarity_data = load_similarity_data(similarity_file)
     if not similarity_data:
-        print(f"❌ Failed to load similarity data from {similarity_file}")
+        print(f"Failed to load similarity data from {similarity_file}")
         return []
     
     structure = get_shapegen_structure(base_path)
     if not structure:
-        print(f"❌ No Shapegen structure found in {base_path}")
+        print(f"No Shapegen structure found in {base_path}")
         return []
     
     triplets = []
@@ -496,10 +496,10 @@ def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path
             else:
                 consecutive_failures += 1
                 if consecutive_failures > 1000:
-                    print(f"    ⚠️  Too many consecutive failures, may have issues with data")
+                    print(f"    Warning: Too many consecutive failures, may have issues with data")
                     break
     
-    print(f"✅ Generated {len(triplets)} Shapegen triplets")
+    print(f"Generated {len(triplets)} Shapegen triplets")
     return triplets
 
 # ──────────────────────────── Primigen Functions ────────────────────────────
@@ -687,7 +687,7 @@ def generate_primigen_triplets(base_path: str, camera_path: str, bg_type: str,
                     if generated % 1000 == 0:
                         print(f"    Generated {generated}/{n_target} for {n_level}")
     
-    print(f"✅ Generated {len(triplets)} Primigen triplets")
+    print(f"Generated {len(triplets)} Primigen triplets")
     return triplets
 
 # ──────────────────────────── Objaverse Functions ────────────────────────────
@@ -848,12 +848,12 @@ def generate_objaverse_triplets(base_path: str, similarity_file: str,
     # Load similarity data and structure
     similarity_data = load_similarity_data(similarity_file)
     if not similarity_data:
-        print(f"❌ Failed to load similarity data from {similarity_file}")
+        print(f"Failed to load similarity data from {similarity_file}")
         return []
     
     structure = get_objaverse_structure(base_path)
     if not structure:
-        print(f"❌ No Objaverse structure found in {base_path}")
+        print(f"No Objaverse structure found in {base_path}")
         return []
     
     print(f"  Found {len(structure)} Objaverse objects")
@@ -895,10 +895,10 @@ def generate_objaverse_triplets(base_path: str, similarity_file: str,
             else:
                 consecutive_failures += 1
                 if consecutive_failures > 1000:
-                    print(f"    ⚠️  Too many consecutive failures, may have issues with data")
+                    print(f"    Warning: Too many consecutive failures, may have issues with data")
                     break
     
-    print(f"✅ Generated {len(triplets)} Objaverse triplets")
+    print(f"Generated {len(triplets)} Objaverse triplets")
     return triplets
 
 # ──────────────────────────── Main Generation Function ────────────────────────────
@@ -926,7 +926,7 @@ def save_to_csv(triplets: List[Dict], output_path: str):
                 triplet['name_b']
             ])
     
-    print(f"✅ Saved to {output_path}")
+    print(f"Saved to {output_path}")
 
 def generate_hida_dataset_with_objaverse(
     shapegen_black_path: str,
@@ -1021,18 +1021,18 @@ def generate_hida_dataset_with_objaverse(
         all_triplets.extend(objaverse_white)
         
     except Exception as e:
-        print(f"❌ Error during generation: {e}")
+        print(f"Error during generation: {e}")
         return
     
-    print(f"\n📊 Generated {len(all_triplets):,} total triplets")
+    print(f"\nGenerated {len(all_triplets):,} total triplets")
     
     # Shuffle and save
-    print("🔀 Shuffling triplets...")
+    print("Shuffling triplets...")
     random.shuffle(all_triplets)
     
     save_to_csv(all_triplets, output_csv_path)
     
-    print("✅ HIDA dataset with Objaverse generation complete!")
+    print("HIDA dataset with Objaverse generation complete!")
 
 def main():
     parser = argparse.ArgumentParser(description='Generate HIDA Dataset with Objaverse')
@@ -1096,7 +1096,7 @@ def main():
                         (args.objaverse_ratios, 'objaverse'),
                         (args.n_ratios, 'n-level')]:
         if abs(sum(ratios) - 1.0) > 0.01:
-            print(f"❌ {name} ratios must sum to 1.0, got {sum(ratios)}")
+            print(f"Error: {name} ratios must sum to 1.0, got {sum(ratios)}")
             sys.exit(1)
     
     # Validate paths
@@ -1120,7 +1120,7 @@ def main():
     
     for path, name in paths_to_check:
         if not os.path.exists(path):
-            print(f"❌ {name} path does not exist: {path}")
+            print(f"Error: {name} path does not exist: {path}")
             sys.exit(1)
     
     # Set random seed for reproducibility

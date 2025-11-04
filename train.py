@@ -12,11 +12,13 @@ from omegaconf import DictConfig, OmegaConf
 from peft import LoraConfig, get_peft_model
 
 from datasets.builder import build_loader
-from models import ContrastiveModel
-from training import train_epoch, validate_epoch
+from datasets import SiamesePairDatasetBalanced
+from models import ContrastiveModel, SiameseContrastiveModel
+from training import train_epoch, validate_epoch, train_epoch_siamese, validate_epoch_siamese
 from utils import set_seed, save_checkpoint, TripletLoss, suppress_print, suppress_wandb, suppress_logging
 from utils.losses import HingeLoss, SingleTripletMultiSimilarityLoss, Oddity_Loss, TripletLoss
 from loguru import logger
+from torch.utils.data import DataLoader
 import subprocess
 import os
 import random
@@ -54,9 +56,12 @@ def generate_dataset_if_needed(cfg, exp_name):
     elif dataset_type == "hida_co3d":
         output_filename = "hida_co3d_dataset.csv"
         script_name = "create_csv_w_Objaverse_co3D.py"
+    elif dataset_type == "hida_co3d_objaverse":
+        output_filename = "hida_co3d_objaverse_dataset.csv"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "objaverse":
         output_filename = "objaverse_dataset.csv"
-        script_name = "create_csv_w_Objaverse.py"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "co3d":
         output_filename = "co3d_dataset.csv"
         script_name = "create_csv_w_Objaverse_co3D.py"
@@ -104,8 +109,31 @@ def generate_dataset_if_needed(cfg, exp_name):
         cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
         cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
+    elif script_name == "create_csv_w_Objaverse.py":
+        # Objaverse script - Shapegen + Primigen + Objaverse (NO CO3D support)
+        cmd.extend([
+            "--shapegen-black", paths.shapegen_black,
+            "--shapegen-random", paths.shapegen_random,
+            "--shapegen-white", paths.shapegen_white,
+            "--shapegen-black-sim", paths.shapegen_black_sim,
+            "--shapegen-random-sim", paths.shapegen_random_sim,
+            "--shapegen-white-sim", paths.shapegen_white_sim,
+            "--shapegen-camera", paths.shapegen_camera,
+            "--primigen-black", paths.primigen_black,
+            "--primigen-random", paths.primigen_random,
+            "--primigen-white", paths.primigen_white,
+            "--primigen-camera", paths.primigen_camera,
+            "--objaverse-black", paths.objaverse_black,
+            "--objaverse-random", paths.objaverse_random,
+            "--objaverse-white", paths.objaverse_white,
+            "--objaverse-sim", paths.objaverse_sim,
+        ])
+        cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
+        cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
+        cmd.extend(["--objaverse-ratios"] + [str(r) for r in cfg.dataset_generation.objaverse_ratios])
+        cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
     else:
-        # Extended script - all paths need to be provided
+        # CO3D script - all paths with exclusion flags
         cmd.extend([
             "--shapegen-black", paths.shapegen_black,
             "--shapegen-random", paths.shapegen_random,
@@ -134,12 +162,12 @@ def generate_dataset_if_needed(cfg, exp_name):
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
 
         # Add dataset inclusion flags based on dataset_type
-        if dataset_type == "hida_objaverse":
-            # Include Shapegen + Primigen + Objaverse, exclude CO3D
-            cmd.extend(["--no-co3d"])
-        elif dataset_type == "hida_co3d":
+        if dataset_type == "hida_co3d":
             # Include Shapegen + Primigen + CO3D, exclude Objaverse
             cmd.extend(["--no-objaverse"])
+        elif dataset_type == "hida_co3d_objaverse":
+            # Include all datasets: Shapegen + Primigen + CO3D + Objaverse
+            pass  # No exclusion flags needed
         elif dataset_type == "objaverse":
             # Include only Objaverse, exclude Shapegen + Primigen + CO3D
             cmd.extend(["--no-shapegen", "--no-primigen", "--no-co3d"])
@@ -149,7 +177,7 @@ def generate_dataset_if_needed(cfg, exp_name):
         elif dataset_type == "objaverse_co3d":
             # Include Objaverse + CO3D, exclude Shapegen + Primigen
             cmd.extend(["--no-shapegen", "--no-primigen"])
-    
+
     # Run the dataset generation script
     try:
         subprocess.run(cmd, check=True)
@@ -157,7 +185,7 @@ def generate_dataset_if_needed(cfg, exp_name):
     except subprocess.CalledProcessError as e:
         logger.error(f"Dataset generation failed: {e}")
         raise
-    
+
     return output_path
 
 def generate_epoch_dataset(cfg, epoch, seed, exp_name):
@@ -174,9 +202,12 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
     elif dataset_type == "hida_co3d":
         base_filename = "hida_co3d_dataset"
         script_name = "create_csv_w_Objaverse_co3D.py"
+    elif dataset_type == "hida_co3d_objaverse":
+        base_filename = "hida_co3d_objaverse_dataset"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "objaverse":
         base_filename = "objaverse_dataset"
-        script_name = "create_csv_w_Objaverse.py"
+        script_name = "create_csv_w_Objaverse_co3D.py"
     elif dataset_type == "co3d":
         base_filename = "co3d_dataset"
         script_name = "create_csv_w_Objaverse_co3D.py"
@@ -222,8 +253,31 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
         cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
         cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
+    elif script_name == "create_csv_w_Objaverse.py":
+        # Objaverse script - Shapegen + Primigen + Objaverse (NO CO3D support)
+        cmd.extend([
+            "--shapegen-black", paths.shapegen_black,
+            "--shapegen-random", paths.shapegen_random,
+            "--shapegen-white", paths.shapegen_white,
+            "--shapegen-black-sim", paths.shapegen_black_sim,
+            "--shapegen-random-sim", paths.shapegen_random_sim,
+            "--shapegen-white-sim", paths.shapegen_white_sim,
+            "--shapegen-camera", paths.shapegen_camera,
+            "--primigen-black", paths.primigen_black,
+            "--primigen-random", paths.primigen_random,
+            "--primigen-white", paths.primigen_white,
+            "--primigen-camera", paths.primigen_camera,
+            "--objaverse-black", paths.objaverse_black,
+            "--objaverse-random", paths.objaverse_random,
+            "--objaverse-white", paths.objaverse_white,
+            "--objaverse-sim", paths.objaverse_sim,
+        ])
+        cmd.extend(["--shapegen-ratios"] + [str(r) for r in cfg.dataset_generation.shapegen_ratios])
+        cmd.extend(["--primigen-ratios"] + [str(r) for r in cfg.dataset_generation.primigen_ratios])
+        cmd.extend(["--objaverse-ratios"] + [str(r) for r in cfg.dataset_generation.objaverse_ratios])
+        cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
     else:
-        # Extended script - all paths need to be provided
+        # CO3D script - all paths with exclusion flags
         cmd.extend([
             "--shapegen-black", paths.shapegen_black,
             "--shapegen-random", paths.shapegen_random,
@@ -252,12 +306,12 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
         cmd.extend(["--n-ratios"] + [str(r) for r in cfg.dataset_generation.n_ratios])
 
         # Add dataset inclusion flags based on dataset_type
-        if dataset_type == "hida_objaverse":
-            # Include Shapegen + Primigen + Objaverse, exclude CO3D
-            cmd.extend(["--no-co3d"])
-        elif dataset_type == "hida_co3d":
+        if dataset_type == "hida_co3d":
             # Include Shapegen + Primigen + CO3D, exclude Objaverse
             cmd.extend(["--no-objaverse"])
+        elif dataset_type == "hida_co3d_objaverse":
+            # Include all datasets: Shapegen + Primigen + CO3D + Objaverse
+            pass  # No exclusion flags needed
         elif dataset_type == "objaverse":
             # Include only Objaverse, exclude Shapegen + Primigen + CO3D
             cmd.extend(["--no-shapegen", "--no-primigen", "--no-co3d"])
@@ -267,7 +321,7 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
         elif dataset_type == "objaverse_co3d":
             # Include Objaverse + CO3D, exclude Shapegen + Primigen
             cmd.extend(["--no-shapegen", "--no-primigen"])
-    
+
     # Run the dataset generation script
     try:
         subprocess.run(cmd, check=True)
@@ -275,7 +329,7 @@ def generate_epoch_dataset(cfg, epoch, seed, exp_name):
     except subprocess.CalledProcessError as e:
         logger.error(f"Epoch {epoch} dataset generation failed: {e}")
         raise
-    
+
     return output_path
 
 def setup_ddp():
@@ -301,14 +355,23 @@ def main(cfg: DictConfig) -> None:
     
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     
+    # Determine training mode
+    training_mode = cfg.training.mode  # "contrastive" or "siamese"
+
     train_filters = cfg.splits.train_dataset.filters or {}
     val_filters = cfg.splits.val_dataset.filters or {}
-    
+
     train_filter_str = '&'.join([f'{key}={value}' for key, value in train_filters.items()])
     val_filter_str = '&'.join([f'{key}={value}' for key, value in val_filters.items()])
-    exp_name = f'{cfg.model.backbone.checkpoint}_bs{cfg.training.batch_size}x{world_size}_lr{cfg.optimizer.lr}_ep{cfg.training.epochs}_{cfg.loss.type}_seed{cfg.system.random_seed}'
+    exp_name = f'{cfg.model.backbone.checkpoint}_bs{cfg.training.batch_size}x{world_size}_lr{cfg.optimizer.lr}_ep{cfg.training.epochs}'
+
+    if training_mode == "siamese":
+        exp_name += f'_siamese_dropout{cfg.training.siamese.dropout}_seed{cfg.system.random_seed}'
+    else:
+        exp_name += f'_{cfg.loss.type}_seed{cfg.system.random_seed}'
+
     exp_name += f'_train:{train_filter_str}_val:{val_filter_str}'
-    if cfg.model.use_lora:
+    if cfg.model.use_lora and training_mode == "contrastive":
         exp_name += f'_lora_r{cfg.model.lora_r}_alpha{cfg.model.lora_alpha}_dropout{cfg.model.lora_dropout}_|{random.randint(1, 100)}|'
     
     # Generate dataset if needed (after exp_name is created)
@@ -317,16 +380,22 @@ def main(cfg: DictConfig) -> None:
     checkpoint_dir = os.path.join(cfg.training.log_dir, exp_name, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    model = ContrastiveModel(cfg.model).to(device)
+    # Create model based on training mode
+    if training_mode == "siamese":
+        model = SiameseContrastiveModel(cfg.model, cfg.training.siamese).to(device)
+        backbone_status = "frozen" if cfg.training.siamese.freeze_backbone else "unfrozen"
+        logger.info(f"Created Siamese model with {backbone_status} backbone")
+    else:
+        model = ContrastiveModel(cfg.model).to(device)
 
-    if cfg.model.use_lora:
-        lora_config = LoraConfig(
-            r=cfg.model.lora_r,
-            lora_alpha=cfg.model.lora_alpha,
-            target_modules=["qkv", "proj"],
-            lora_dropout=cfg.model.lora_dropout,
-        )
-        model = get_peft_model(model, lora_config)
+        if cfg.model.use_lora:
+            lora_config = LoraConfig(
+                r=cfg.model.lora_r,
+                lora_alpha=cfg.model.lora_alpha,
+                target_modules=["qkv", "proj"],
+                lora_dropout=cfg.model.lora_dropout,
+            )
+            model = get_peft_model(model, lora_config)
 
     model = torch.compile(model)
 
@@ -336,28 +405,97 @@ def main(cfg: DictConfig) -> None:
     num_workers = cfg.training.num_workers
 
     backbone = model.module.backbone if hasattr(model, 'module') else model.backbone
-    
-    # Create dataset configs with updated paths
+
+    # Calculate train_ratio based on validation mode
+    if cfg.validation.mode == "fixed":
+        # Read CSV to get total dataset size
+        import pandas as pd
+        df = pd.read_csv(dataset_csv_path)
+
+        # Apply filters if specified to get actual dataset size
+        train_filters = cfg.splits.train_dataset.filters or {}
+        if train_filters:
+            for column, values in train_filters.items():
+                if column in df.columns:
+                    df = df[df[column] == values]
+
+        total_size = len(df)
+        fixed_val_size = cfg.validation.fixed_size
+
+        # Ensure we have enough samples for validation
+        if fixed_val_size >= total_size:
+            logger.warning(f"Fixed validation size ({fixed_val_size}) >= total dataset size ({total_size}). "
+                         f"Using ratio mode with default 0.95 train ratio instead.")
+            calculated_train_ratio = cfg.dataset.train_ratio
+        else:
+            calculated_train_ratio = (total_size - fixed_val_size) / total_size
+            logger.info(f"Using fixed validation size: {fixed_val_size} samples out of {total_size} total")
+            logger.info(f"Calculated train_ratio: {calculated_train_ratio:.4f} (train: {total_size - fixed_val_size}, val: {fixed_val_size})")
+    else:
+        # Use ratio mode
+        calculated_train_ratio = cfg.dataset.train_ratio
+        logger.info(f"Using ratio-based validation split: train_ratio={calculated_train_ratio}")
+
+    # Create dataset configs with updated paths and calculated ratio
     train_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.splits.train_dataset)
     train_dataset_cfg.csv_path = dataset_csv_path
-    
-    val_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.splits.val_dataset) 
+    train_dataset_cfg.train_ratio = calculated_train_ratio
+
+    val_dataset_cfg = OmegaConf.merge(cfg.dataset, cfg.splits.val_dataset)
     val_dataset_cfg.csv_path = dataset_csv_path
+    val_dataset_cfg.train_ratio = calculated_train_ratio
     
     # Add augmentation config to datasets
     augmentation_config = cfg.augmentation if cfg.augmentation.enabled else None
     
-    train_loader = build_loader(train_dataset_cfg, num_workers, batch_size=cfg.training.batch_size, 
-                               transform=backbone.transform, num_gpus=world_size, split="train",
-                               augmentation_config=augmentation_config, 
-                               augmentation_enabled=cfg.augmentation.enabled,
-                               save_every_n=cfg.augmentation.save_every_n,
-                               save_dir=cfg.augmentation.save_dir)
-    
-    val_loader = build_loader(val_dataset_cfg, num_workers, batch_size=cfg.training.batch_size, 
-                             transform=backbone.transform, num_gpus=world_size, split="val",
-                             augmentation_config=None,  # No augmentation for validation
-                             augmentation_enabled=False)
+    # Build loaders - for Siamese mode, we'll wrap the datasets after creation
+    if training_mode == "siamese":
+        # For Siamese, we build triplet datasets first, then wrap them
+        train_loader_triplet = build_loader(train_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
+                                           transform=backbone.transform, num_gpus=world_size, split="train",
+                                           augmentation_config=augmentation_config,
+                                           augmentation_enabled=cfg.augmentation.enabled,
+                                           save_every_n=cfg.augmentation.save_every_n,
+                                           save_dir=cfg.augmentation.save_dir)
+
+        val_loader_triplet = build_loader(val_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
+                                         transform=backbone.transform, num_gpus=world_size, split="val",
+                                         augmentation_config=None,
+                                         augmentation_enabled=False)
+
+        # Wrap triplet datasets into pair datasets
+        train_pair_dataset = SiamesePairDatasetBalanced(train_loader_triplet.dataset, include_positive_negative_pairs=True)
+        val_pair_dataset = SiamesePairDatasetBalanced(val_loader_triplet.dataset, include_positive_negative_pairs=True)
+
+        # Create new dataloaders for pairs
+        train_loader = DataLoader(
+            train_pair_dataset,
+            batch_size=cfg.training.batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
+        val_loader = DataLoader(
+            val_pair_dataset,
+            batch_size=cfg.training.batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+    else:
+        # Contrastive mode - use triplet datasets directly
+        train_loader = build_loader(train_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
+                                   transform=backbone.transform, num_gpus=world_size, split="train",
+                                   augmentation_config=augmentation_config,
+                                   augmentation_enabled=cfg.augmentation.enabled,
+                                   save_every_n=cfg.augmentation.save_every_n,
+                                   save_dir=cfg.augmentation.save_dir)
+
+        val_loader = build_loader(val_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
+                                 transform=backbone.transform, num_gpus=world_size, split="val",
+                                 augmentation_config=None,  # No augmentation for validation
+                                 augmentation_enabled=False)
     
     mochi_loader = build_loader(cfg.splits.test_dataset, num_workers, batch_size=1,
                                transform=backbone.transform, num_gpus=1,
@@ -365,10 +503,13 @@ def main(cfg: DictConfig) -> None:
                                augmentation_enabled=False)
     
     if is_main_process:
-        wandb.init(project="hida-contrastive", name=exp_name, config=OmegaConf.to_container(cfg, resolve=True), dir=cfg.training.log_dir, entity="HIDA_dataset")
+        # Use different wandb project for Siamese training
+        wandb_project = cfg.training.siamese.wandb_project if training_mode == "siamese" else "Hida-data-size"
+        wandb.init(project=wandb_project, name=exp_name, config=OmegaConf.to_container(cfg, resolve=True), dir=cfg.training.log_dir, entity="HIDA_dataset")
 
         logger.info(OmegaConf.to_yaml(cfg))
         logger.info(f"Using device: {device}, world_size: {world_size}")
+        logger.info(f"Training mode: {training_mode}")
 
         logger.info(f"Train dataset size: {len(train_loader.dataset)}")
         logger.info(f"Val dataset size: {len(val_loader.dataset)}")
@@ -377,42 +518,170 @@ def main(cfg: DictConfig) -> None:
         model_for_counting = model.module if hasattr(model, 'module') else model
         logger.info(f"Model parameters: {sum(p.numel() for p in model_for_counting.parameters()):,}")
         logger.info(f"Trainable parameters: {sum(p.numel() for p in model_for_counting.parameters() if p.requires_grad):,}")
-        logger.info(f"Loss type: {cfg.loss.type}")
-        if cfg.loss.type == 'oddity':
-            logger.info(f"Oddity loss temperature: {cfg.loss.temperature}")
+
+        if training_mode == "contrastive":
+            logger.info(f"Loss type: {cfg.loss.type}")
+            if cfg.loss.type == 'oddity':
+                logger.info(f"Oddity loss temperature: {cfg.loss.temperature}")
+        else:
+            logger.info("Loss type: Binary Cross-Entropy (Siamese)")
+            logger.info(f"Siamese dropout: {cfg.training.siamese.dropout}")
     else:
         suppress_print()
         suppress_wandb()
         suppress_logging()
     
-    # Initialize loss function based on config
-    criterion = get_loss_function(cfg.loss)
-    optimizer = instantiate(cfg.optimizer, params=model.parameters())
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-7)
+    # Initialize loss function based on config (only for contrastive mode)
+    if training_mode == "contrastive":
+        criterion = get_loss_function(cfg.loss)
+    else:
+        criterion = None  # Siamese model has its own loss computation
+
+    # Create optimizer with different learning rates for Siamese mode
+    if training_mode == "siamese":
+        # Get the actual model (unwrap DDP if needed)
+        model_unwrapped = model.module if hasattr(model, 'module') else model
+
+        # Separate parameters for backbone and siamese head
+        backbone_params = list(model_unwrapped.backbone.parameters())
+        siamese_params = list(model_unwrapped.siamese_net.parameters())
+
+        # Create parameter groups with different learning rates
+        param_groups = [
+            {'params': siamese_params, 'lr': cfg.training.siamese.lr},  # Siamese head: configurable
+        ]
+
+        # Only add backbone params if not frozen
+        if not cfg.training.siamese.freeze_backbone:
+            param_groups.append({'params': backbone_params, 'lr': cfg.optimizer.lr})  # DINO backbone: uses main optimizer lr
+
+        # Create optimizer based on selected type for Siamese mode
+        optimizer_type = cfg.training.siamese.optimizer_type.lower()
+        if optimizer_type == "adamw":
+            optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay=cfg.optimizer.weight_decay,
+                betas=cfg.optimizer.betas
+            )
+        elif optimizer_type == "adam":
+            optimizer = torch.optim.Adam(
+                param_groups,
+                weight_decay=cfg.optimizer.weight_decay,
+                betas=cfg.optimizer.betas
+            )
+        else:
+            raise ValueError(f"Unknown optimizer type for Siamese mode: {optimizer_type}")
+    else:
+        optimizer = instantiate(cfg.optimizer, params=model.parameters())
+
+    # Create scheduler based on training mode
+    if training_mode == "siamese" and cfg.training.siamese.use_scheduler:
+        # Use warmup + cosine annealing scheduler for Siamese mode
+        warmup_epochs = cfg.training.siamese.warmup_epochs
+        max_epochs = cfg.training.epochs
+
+        scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
+        )
+        scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, max_epochs - warmup_epochs)
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[warmup_epochs]
+        )
+    else:
+        # Use default CosineAnnealingWarmRestarts for contrastive mode or when scheduler disabled
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-7)
     scaler = torch.amp.GradScaler()
 
     best_val_loss = float('inf')
 
-    val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
+    # Initial validation
+    if training_mode == "siamese":
+        val_loss, val_acc, mochi_results = validate_epoch_siamese(model, val_loader, device, mochi_loader, is_main_process)
+    else:
+        val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
     
     for epoch in range(cfg.training.epochs):
         # Generate new dataset for each epoch if needed
         if cfg.dataset_generation.get("regenerate_per_epoch", False):
             seed = random.randint(1, 1000000)
             epoch_dataset_path = generate_epoch_dataset(cfg, epoch, seed, exp_name)
+
+            # Recalculate train_ratio if using fixed validation mode
+            if cfg.validation.mode == "fixed":
+                import pandas as pd
+                df = pd.read_csv(epoch_dataset_path)
+
+                # Apply filters if specified
+                train_filters = cfg.splits.train_dataset.filters or {}
+                if train_filters:
+                    for column, values in train_filters.items():
+                        if column in df.columns:
+                            df = df[df[column] == values]
+
+                total_size = len(df)
+                fixed_val_size = cfg.validation.fixed_size
+
+                if fixed_val_size >= total_size:
+                    logger.warning(f"Epoch {epoch}: Fixed validation size ({fixed_val_size}) >= total dataset size ({total_size}). "
+                                 f"Using ratio mode with default 0.95 train ratio instead.")
+                    epoch_train_ratio = cfg.dataset.train_ratio
+                else:
+                    epoch_train_ratio = (total_size - fixed_val_size) / total_size
+                    if epoch == 0 or is_main_process:
+                        logger.info(f"Epoch {epoch}: Recalculated train_ratio={epoch_train_ratio:.4f} "
+                                  f"(train: {total_size - fixed_val_size}, val: {fixed_val_size})")
+            else:
+                epoch_train_ratio = calculated_train_ratio
         else:
             epoch_dataset_path = dataset_csv_path
+            epoch_train_ratio = calculated_train_ratio
 
+        # Reload dataset with updated path and ratio
         if hasattr(train_loader.dataset, "reload_data"):
+            # For regular contrastive mode
             train_loader.dataset.csv_path = epoch_dataset_path
+            train_loader.dataset.train_ratio = epoch_train_ratio
             train_loader.dataset.reload_data()
+        elif training_mode == "siamese" and hasattr(train_loader.dataset, "triplet_dataset"):
+            # For Siamese mode, update the underlying triplet dataset
+            train_loader.dataset.triplet_dataset.csv_path = epoch_dataset_path
+            train_loader.dataset.triplet_dataset.train_ratio = epoch_train_ratio
+            train_loader.dataset.triplet_dataset.reload_data()
+
+        # Update validation loader dataset if needed
+        if hasattr(val_loader.dataset, "reload_data"):
+            val_loader.dataset.csv_path = epoch_dataset_path
+            val_loader.dataset.train_ratio = epoch_train_ratio
+            val_loader.dataset.reload_data()
+        elif training_mode == "siamese" and hasattr(val_loader.dataset, "triplet_dataset"):
+            val_loader.dataset.triplet_dataset.csv_path = epoch_dataset_path
+            val_loader.dataset.triplet_dataset.train_ratio = epoch_train_ratio
+            val_loader.dataset.triplet_dataset.reload_data()
         if hasattr(train_loader.sampler, 'set_epoch'):
             train_loader.sampler.set_epoch(epoch)
         if hasattr(val_loader.sampler, 'set_epoch'):
             val_loader.sampler.set_epoch(epoch)
 
-        train_epoch(model, train_loader, criterion, optimizer, device, epoch, scaler, is_main_process)
-        val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
+        # Use appropriate training and validation functions based on mode
+        if training_mode == "siamese":
+            train_epoch_siamese(model, train_loader, optimizer, device, epoch, scaler, is_main_process)
+            val_loss, val_acc, mochi_results = validate_epoch_siamese(model, val_loader, device, mochi_loader, is_main_process)
+        else:
+            train_epoch(model, train_loader, criterion, optimizer, device, epoch, scaler, is_main_process)
+            val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
+
+        # Step scheduler after each epoch
+        scheduler.step()
+
+        # Log learning rate if in siamese mode with scheduler
+        if is_main_process and training_mode == "siamese" and cfg.training.siamese.use_scheduler:
+            current_lr = optimizer.param_groups[0]['lr']
+            wandb.log({
+                'train/learning_rate': current_lr,
+                'train/epoch': epoch
+            })
 
         if is_main_process and val_loss < best_val_loss:
             best_val_loss = val_loss

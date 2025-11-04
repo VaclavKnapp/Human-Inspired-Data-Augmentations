@@ -204,10 +204,10 @@ def load_similarity_data(similarity_file: str):
     try:
         with open(similarity_file, 'rb') as f:
             data = pickle.load(f)
-        print(f"✅ Loaded similarity data for {len(data)} extrusion levels")
+        print(f"Loaded similarity data for {len(data)} extrusion levels")
         return data
     except Exception as e:
-        print(f"❌ Error loading similarity data: {e}")
+        print(f"Error loading similarity data: {e}")
         return {}
 
 def get_shapegen_structure(base_path: str):
@@ -307,20 +307,21 @@ def calculate_object_similarity_bins(extrusion_key: str, smoothness_key: str, ta
     
     return bin1, bin2, bin3, bin_info
 
-def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict, similarity_data: Dict, bin_type: str):
+def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict, similarity_data: Dict, bin_type: str,
+                             allowed_objects: List = None):
     """Generate one Shapegen triplet based on similarity bins."""
     # Select random extrusion and smoothness
     extrusion_levels = list(structure.keys())
     if not extrusion_levels:
         return None
-    
+
     extrusion = random.choice(extrusion_levels)
     smoothness_levels = list(structure[extrusion].keys())
     if not smoothness_levels:
         return None
-    
+
     smoothness = random.choice(smoothness_levels)
-    
+
     extrusion_key = f"extrusion_{extrusion}"
     smoothness_key = f"smoothness_{smoothness}"
     
@@ -336,15 +337,27 @@ def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict,
     # Select focal object from similarity data keys
     available_shapes = list(structure[extrusion][smoothness].keys())
     similarities = similarity_data[extrusion_key][smoothness_key]
-    
+
     # Find shapes that exist in both structure and similarity data
     valid_shapes = [shape for shape in available_shapes if shape in similarities]
+
+    # Filter by allowed_objects if manifest is provided
+    if allowed_objects is not None:
+        # allowed_objects contains tuples of (extrusion, smoothness, shape_id)
+        allowed_shape_ids = set()
+        for obj_tuple in allowed_objects:
+            if len(obj_tuple) == 3 and obj_tuple[0] == extrusion and obj_tuple[1] == smoothness:
+                allowed_shape_ids.add(f"shape_{obj_tuple[2]}")
+
+        if allowed_shape_ids:
+            valid_shapes = [s for s in valid_shapes if s in allowed_shape_ids]
+
     if len(valid_shapes) < 2:
         print(f"[DEBUG] Not enough valid shapes for {extrusion_key}/{smoothness_key}: {len(valid_shapes)}")
         print(f"[DEBUG] Available shapes in structure: {available_shapes[:5]}...")
         print(f"[DEBUG] Available shapes in similarity: {list(similarities.keys())[:5]}...")
         return None
-    
+
     focal_shape = random.choice(valid_shapes)
     
     # Get similarity bins
@@ -368,23 +381,23 @@ def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict,
     
     # Get focal object images (A and A')
     focal_dir = structure[extrusion][smoothness][focal_shape]
-    focal_imgs = select_viewpoints(focal_dir, camera_path, 10)
+    focal_imgs = select_viewpoints(focal_dir, camera_path, k=2)
     if len(focal_imgs) < 2:
         print(f"[DEBUG] Not enough focal images in {focal_dir}")
         return None
-    
+
     img_a, img_a_prime = random.sample(focal_imgs, 2)
     img_a_path = os.path.join(focal_dir, img_a)
     img_a_prime_path = os.path.join(focal_dir, img_a_prime)
-    
+
     # Get similar object image (B)
     similar_obj, similarity_score = random.choice(bins[bin_index])
     if similar_obj not in structure[extrusion][smoothness]:
         print(f"[DEBUG] Similar object {similar_obj} not in structure")
         return None
-    
+
     similar_dir = structure[extrusion][smoothness][similar_obj]
-    similar_imgs = select_viewpoints(similar_dir, camera_path, 5)
+    similar_imgs = select_viewpoints(similar_dir, camera_path, k=1)
     if not similar_imgs:
         print(f"[DEBUG] No similar images in {similar_dir}")
         return None
@@ -415,20 +428,21 @@ def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict,
         'similarity_score': similarity_score
     }
 
-def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path: str, 
-                              bg_type: str, ratios: List[float], n_triplets: int):
+def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path: str,
+                              bg_type: str, ratios: List[float], n_triplets: int,
+                              manifest_objects: Dict = None):
     """Generate n_triplets for Shapegen dataset."""
     print(f"Generating {n_triplets} Shapegen triplets ({bg_type} background)...")
-    
+
     # Load similarity data and structure
     similarity_data = load_similarity_data(similarity_file)
     if not similarity_data:
-        print(f"❌ Failed to load similarity data from {similarity_file}")
+        print(f"Failed to load similarity data from {similarity_file}")
         return []
-    
+
     structure = get_shapegen_structure(base_path)
     if not structure:
-        print(f"❌ No Shapegen structure found in {base_path}")
+        print(f"No Shapegen structure found in {base_path}")
         return []
     
     print(f"  Found {len(structure)} extrusion levels")
@@ -453,15 +467,21 @@ def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path
     
     for bin_type, target_count in zip(bin_types, bin_counts):
         print(f"  Generating {target_count} {bin_type} similarity triplets...")
-        
+
+        # Get allowed objects for this bin_type if manifest is provided
+        allowed_objects = None
+        if manifest_objects is not None and bg_type in manifest_objects:
+            allowed_objects = manifest_objects[bg_type].get(bin_type, None)
+
         attempts = 0
         generated = 0
         max_attempts = target_count * 20  # Increased attempts
         consecutive_failures = 0
-        
+
         while generated < target_count and attempts < max_attempts:
             attempts += 1
-            triplet = generate_shapegen_triplet(base_path, camera_path, structure, similarity_data, bin_type)
+            triplet = generate_shapegen_triplet(base_path, camera_path, structure, similarity_data, bin_type,
+                                               allowed_objects)
             
             if triplet:
                 triplet.update({
@@ -478,10 +498,10 @@ def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path
             else:
                 consecutive_failures += 1
                 if consecutive_failures > 1000:
-                    print(f"    ⚠️  Too many consecutive failures, may have issues with data")
+                    print(f"    Warning: Too many consecutive failures, may have issues with data")
                     break
     
-    print(f"✅ Generated {len(triplets)} Shapegen triplets")
+    print(f"Generated {len(triplets)} Shapegen triplets")
     return triplets
 
 # ──────────────────────────── Primigen Functions ────────────────────────────
@@ -521,15 +541,16 @@ def get_primigen_structure(base_path: str):
     
     return structure
 
-def generate_primigen_triplet(structure: Dict, camera_path: str, condition_type: str, n_level: str = None):
+def generate_primigen_triplet(structure: Dict, camera_path: str, condition_type: str, n_level: str = None,
+                              allowed_objects: List = None):
     """Generate one Primigen triplet for the specified condition type."""
     if not structure:
         return None
-    
+
     # Select n_level if not specified
     if n_level is None:
         n_level = random.choice(list(structure.keys()))
-    
+
     if n_level not in structure:
         return None
     
@@ -589,11 +610,11 @@ def generate_primigen_triplet(structure: Dict, camera_path: str, condition_type:
         return None
     
     # Select viewpoints
-    imgs_a = select_viewpoints(dir_a, camera_path, 10)
+    imgs_a = select_viewpoints(dir_a, camera_path, k=2)
     if len(imgs_a) < 2:
         return None
-    
-    imgs_b = select_viewpoints(dir_b, camera_path, 5)
+
+    imgs_b = select_viewpoints(dir_b, camera_path, k=1)
     if not imgs_b:
         return None
     
@@ -619,44 +640,51 @@ def generate_primigen_triplet(structure: Dict, camera_path: str, condition_type:
         'name_b': name_b
     }
 
-def generate_primigen_triplets(base_path: str, camera_path: str, bg_type: str, 
-                              condition_ratios: List[float], n_ratios: List[float], n_triplets: int):
+def generate_primigen_triplets(base_path: str, camera_path: str, bg_type: str,
+                              condition_ratios: List[float], n_ratios: List[float], n_triplets: int,
+                              manifest_objects: Dict = None):
     """Generate n_triplets for Primigen dataset."""
     print(f"Generating {n_triplets} Primigen triplets ({bg_type} background)...")
-    
+
     structure = get_primigen_structure(base_path)
     if not structure:
         print(f"No Primigen structure found in {base_path}")
         return []
-    
+
     triplets = []
     condition_types = ['place', 'warp', 'config']
     n_levels = list(structure.keys())
-    
+
     # Calculate target counts
     condition_counts = [int(n_triplets * r) for r in condition_ratios]
     total_assigned = sum(condition_counts)
     if total_assigned < n_triplets:
         condition_counts[-1] += n_triplets - total_assigned
-    
+
     for condition_type, target_count in zip(condition_types, condition_counts):
         print(f"  Generating {target_count} {condition_type} triplets...")
-        
+
         # Distribute across n_levels
         n_counts = [int(target_count * r) for r in n_ratios]
         total_n_assigned = sum(n_counts)
         if total_n_assigned < target_count:
             n_counts[-1] += target_count - total_n_assigned
-        
+
         for n_level, n_target in zip(n_levels, n_counts):
+            # Get allowed objects for this condition_type if manifest is provided
+            allowed_objects = None
+            if manifest_objects is not None and bg_type in manifest_objects:
+                allowed_objects = manifest_objects[bg_type].get(condition_type, None)
+
             attempts = 0
             generated = 0
             max_attempts = n_target * 10
-            
+
             while generated < n_target and attempts < max_attempts:
                 attempts += 1
-                triplet = generate_primigen_triplet(structure, camera_path, condition_type, n_level)
-                
+
+                triplet = generate_primigen_triplet(structure, camera_path, condition_type, n_level, allowed_objects)
+
                 if triplet:
                     triplet.update({
                         'trial': len(triplets) + 1,
@@ -665,11 +693,11 @@ def generate_primigen_triplets(base_path: str, camera_path: str, bg_type: str,
                     })
                     triplets.append(triplet)
                     generated += 1
-                    
+
                     if generated % 1000 == 0:
                         print(f"    Generated {generated}/{n_target} for {n_level}")
-    
-    print(f"✅ Generated {len(triplets)} Primigen triplets")
+
+    print(f"Generated {len(triplets)} Primigen triplets")
     return triplets
 
 # ──────────────────────────── Main Generation Function ────────────────────────────
@@ -697,7 +725,7 @@ def save_to_csv(triplets: List[Dict], output_path: str):
                 triplet['name_b']
             ])
     
-    print(f"✅ Saved to {output_path}")
+    print(f"Saved to {output_path}")
 
 def generate_hida_dataset(
     shapegen_black_path: str,
@@ -715,7 +743,8 @@ def generate_hida_dataset(
     shapegen_ratios: List[float] = [0.20, 0.45, 0.35],  # low, medium, high similarity
     primigen_ratios: List[float] = [0.55, 0.27, 0.18],  # place, warp, config
     n_ratios: List[float] = [0.43, 0.42, 0.15],  # n2, n3, n4
-    triplets_per_combo: int = 20000
+    triplets_per_combo: int = 20000,
+    load_manifest_path: Optional[str] = None
 ):
     """Generate the complete HIDA dataset."""
     print("🚀 Generating HIDA Dataset...")
@@ -726,66 +755,84 @@ def generate_hida_dataset(
     print(f"Black background sim file: {os.path.basename(shapegen_black_sim_file)}")
     print(f"Random background sim file: {os.path.basename(shapegen_random_sim_file)}")
     print(f"White background sim file: {os.path.basename(shapegen_white_sim_file)}")
-    
+
+    # Load manifest if provided
+    shapegen_manifest = None
+    primigen_manifest = None
+    if load_manifest_path and os.path.exists(load_manifest_path):
+        print(f"📋 Loading object manifest from {load_manifest_path}")
+        try:
+            import json
+            with open(load_manifest_path, 'r') as f:
+                manifest_data = json.load(f)
+            shapegen_manifest = manifest_data.get('shapegen', None)
+            primigen_manifest = manifest_data.get('primigen', None)
+            print(f"  Loaded manifest with {len(shapegen_manifest) if shapegen_manifest else 0} shapegen backgrounds")
+            print(f"  Loaded manifest with {len(primigen_manifest) if primigen_manifest else 0} primigen backgrounds")
+        except Exception as e:
+            print(f"  Warning: Failed to load manifest: {e}")
+            shapegen_manifest = None
+            primigen_manifest = None
+
     all_triplets = []
     
     # Generate 50K for each combination
     try:
         # Shapegen + black background
         shapegen_black = generate_shapegen_triplets(
-            shapegen_black_path, shapegen_black_sim_file, shapegen_camera_path, 
-            "BLACK", shapegen_ratios, triplets_per_combo
+            shapegen_black_path, shapegen_black_sim_file, shapegen_camera_path,
+            "BLACK", shapegen_ratios, triplets_per_combo, shapegen_manifest
         )
         all_triplets.extend(shapegen_black)
-        
+
         # Shapegen + random background
         shapegen_random = generate_shapegen_triplets(
             shapegen_random_path, shapegen_random_sim_file, shapegen_camera_path,
-            "RANDOM", shapegen_ratios, triplets_per_combo
+            "RANDOM", shapegen_ratios, triplets_per_combo, shapegen_manifest
         )
         all_triplets.extend(shapegen_random)
-        
+
         # Shapegen + white background
         shapegen_white = generate_shapegen_triplets(
             shapegen_white_path, shapegen_white_sim_file, shapegen_camera_path,
-            "WHITE", shapegen_ratios, triplets_per_combo
+            "WHITE", shapegen_ratios, triplets_per_combo, shapegen_manifest
         )
         all_triplets.extend(shapegen_white)
-        
+
         # Primigen + black background
         primigen_black = generate_primigen_triplets(
             primigen_black_path, primigen_camera_path, "BLACK",
-            primigen_ratios, n_ratios, triplets_per_combo
+            primigen_ratios, n_ratios, triplets_per_combo, primigen_manifest
         )
         all_triplets.extend(primigen_black)
-        
+
         # Primigen + random background
         primigen_random = generate_primigen_triplets(
             primigen_random_path, primigen_camera_path, "RANDOM",
-            primigen_ratios, n_ratios, triplets_per_combo
+            primigen_ratios, n_ratios, triplets_per_combo, primigen_manifest
         )
         all_triplets.extend(primigen_random)
-        
+
         # Primigen + white background
         primigen_white = generate_primigen_triplets(
             primigen_white_path, primigen_camera_path, "WHITE",
-            primigen_ratios, n_ratios, triplets_per_combo
+            primigen_ratios, n_ratios, triplets_per_combo, primigen_manifest
         )
         all_triplets.extend(primigen_white)
         
     except Exception as e:
-        print(f"❌ Error during generation: {e}")
+        print(f"Error during generation: {e}")
         return
     
-    print(f"\n📊 Generated {len(all_triplets):,} total triplets")
+    print(f"\nGenerated {len(all_triplets):,} total triplets")
     
     # Shuffle and save
-    print("🔀 Shuffling triplets...")
+    print("Shuffling triplets...")
     random.shuffle(all_triplets)
     
     save_to_csv(all_triplets, output_csv_path)
     
-    print("✅ HIDA dataset generation complete!")
+    print("HIDA dataset generation complete!")
 
 def main():
     parser = argparse.ArgumentParser(description='Generate HIDA Dataset')
@@ -829,7 +876,11 @@ def main():
     parser.add_argument('--triplets-per-combo', type=int, default=20000,
                        help='Number of triplets per combination (default: 50000)')
     parser.add_argument('--seed', type=int, default=42)
-    
+
+    # Manifest control
+    parser.add_argument('--load-object-manifest', type=str, default=None,
+                       help='Path to object manifest JSON to load (restricts object pool)')
+
     args = parser.parse_args()
     
     # Validate ratio sums
@@ -837,7 +888,7 @@ def main():
                         (args.primigen_ratios, 'primigen'),
                         (args.n_ratios, 'n-level')]:
         if abs(sum(ratios) - 1.0) > 0.01:
-            print(f"❌ {name} ratios must sum to 1.0, got {sum(ratios)}")
+            print(f"Error: {name} ratios must sum to 1.0, got {sum(ratios)}")
             sys.exit(1)
     
     # Validate paths
@@ -857,12 +908,12 @@ def main():
     
     for path, name in paths_to_check:
         if not os.path.exists(path):
-            print(f"❌ {name} path does not exist: {path}")
+            print(f"Error: {name} path does not exist: {path}")
             sys.exit(1)
     
     # Set random seed for reproducibility
     random.seed(args.seed)
-    
+
     generate_hida_dataset(
         args.shapegen_black,
         args.shapegen_random,
@@ -879,7 +930,8 @@ def main():
         args.shapegen_ratios,
         args.primigen_ratios,
         args.n_ratios,
-        args.triplets_per_combo
+        args.triplets_per_combo,
+        args.load_object_manifest
     )
 
 if __name__ == "__main__":

@@ -276,3 +276,100 @@ def evaluate_mochi(
         metrics[f'mochi_samediff/{cond}'] = acc
 
     return metrics
+
+
+@torch.no_grad()
+def evaluate_mochi_siamese(model, mochi_loader, device):
+    """
+    Evaluate Siamese network on Mochi benchmark.
+
+    Strategy:
+    For each trial with n_images where one is the odd one out:
+    1. Compute pairwise similarity scores for all pairs
+    2. For each image, compute its average similarity with all other images
+    3. The image with the lowest average similarity is predicted as the odd one out
+
+    Returns:
+        dict: Metrics including overall accuracy and per-condition accuracy
+    """
+    model.eval()
+
+    total_correct = 0.0
+    total_samples = 0
+    acc_per_condition = defaultdict(float)
+    total_per_condition = defaultdict(int)
+
+    for images, dataset, condition, oddity_indices in tqdm(mochi_loader, desc='MOCHI [Siamese]'):
+        images = images.to(device)
+        b_actual, n_images, c, h, w = images.shape
+
+        # Compute all pairwise similarities for each batch item
+        avg_similarities = []
+
+        for batch_idx in range(b_actual):
+            # Compute average similarity for each image with all other images
+            img_avg_sims = []
+
+            for i in range(n_images):
+                # Get similarity of image i with all other images
+                sims_with_others = []
+                for j in range(n_images):
+                    if i != j:
+                        img_i = images[batch_idx, i:i+1]  # (1, c, h, w)
+                        img_j = images[batch_idx, j:j+1]  # (1, c, h, w)
+
+                        # Compute similarity (returns logits, apply sigmoid)
+                        logits = model(img_i, img_j)
+                        sim = torch.sigmoid(logits).item()
+                        sims_with_others.append(sim)
+
+                # Average similarity for this image
+                avg_sim = sum(sims_with_others) / len(sims_with_others)
+                img_avg_sims.append(avg_sim)
+
+            avg_similarities.append(img_avg_sims)
+
+        avg_similarities = torch.tensor(avg_similarities, device=device)  # (b_actual, n_images)
+
+        # The odd one out has the LOWEST average similarity
+        pred_oddity = torch.argmin(avg_similarities, dim=1)
+
+        # Calculate accuracy
+        correct = (pred_oddity == oddity_indices.to(device)).float()
+        acc = adjust_accuracy(correct, 1.0 / n_images)
+
+        total_correct += acc.sum().item()
+        total_samples += b_actual
+
+        # Per-condition tallies
+        for i, (dataset_i, condition_i) in enumerate(zip(dataset, condition)):
+            cond_name = f"{dataset_i}_{condition_i}"
+            acc_per_condition[cond_name] += acc[i].item()
+            total_per_condition[cond_name] += 1
+
+    # Reduce across ranks if needed
+    if dist.is_initialized():
+        t_correct = torch.tensor(total_correct, device=device)
+        t_samples = torch.tensor(total_samples, device=device)
+        dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_samples, op=dist.ReduceOp.SUM)
+        overall_acc = (t_correct.item() / max(1, t_samples.item()))
+
+        for cond_name in list(acc_per_condition.keys()):
+            cond_correct = torch.tensor(acc_per_condition[cond_name], device=device)
+            cond_total = torch.tensor(total_per_condition[cond_name], device=device)
+            dist.all_reduce(cond_correct, op=dist.ReduceOp.SUM)
+            dist.all_reduce(cond_total, op=dist.ReduceOp.SUM)
+            acc_per_condition[cond_name] = cond_correct.item() / max(1, cond_total.item())
+    else:
+        overall_acc = total_correct / max(1, total_samples)
+        acc_per_condition = {k: v / total_per_condition[k] for k, v in acc_per_condition.items()}
+
+    metrics = {
+        'mochi_siamese_overall': overall_acc,
+    }
+
+    for cond, acc in acc_per_condition.items():
+        metrics[f'mochi_siamese/{cond}'] = acc
+
+    return metrics

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import warnings
 
-from evaluation.mochi_eval import evaluate_mochi
+from evaluation.mochi_eval import evaluate_mochi, evaluate_mochi_siamese
 import wandb
 
 
@@ -136,4 +136,132 @@ def validate_epoch(model, val_loader, criterion, device, mochi_loader=None, is_m
             **mochi_results
         })
     
+    return avg_loss, avg_acc, mochi_results
+
+
+@torch.autocast('cuda', dtype=torch.bfloat16)
+def train_epoch_siamese(model, train_loader, optimizer, device, epoch, scaler=None, is_main_process=True):
+    """
+    Training epoch for Siamese network.
+    Expects train_loader to return (img1, img2, label, metadata).
+    """
+    model.train()
+
+    # Set backbone to eval mode if it's frozen
+    if hasattr(model, 'siamese_cfg') and model.siamese_cfg.freeze_backbone:
+        model.backbone.eval()
+
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    pbar = tqdm(train_loader, desc=f'Epoch {epoch} [Siamese]', disable=not is_main_process)
+
+    for batch_idx, (img1, img2, labels, metadata) in enumerate(pbar):
+        img1 = img1.to(device)
+        img2 = img2.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+
+        # Compute loss using model's compute_loss method
+        loss, acc = model.compute_loss(img1, img2, labels)
+
+        if scaler:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        total_loss += loss.item()
+        total_correct += acc.item() * img1.size(0)
+        total_samples += img1.size(0)
+
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'acc': f'{acc.item():.4f}'
+        })
+
+    avg_loss = total_loss / len(train_loader)
+    avg_acc = total_correct / total_samples
+
+    if dist.is_initialized():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            loss_tensor = torch.tensor(avg_loss, device=device)
+            acc_tensor = torch.tensor(avg_acc, device=device)
+
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+        dist.all_reduce(acc_tensor, op=dist.ReduceOp.AVG)
+
+        avg_loss = loss_tensor.item()
+        avg_acc = acc_tensor.item()
+
+    if is_main_process:
+        wandb.log({
+            'train/epoch': epoch,
+            'train/train_loss': avg_loss,
+            'train/train_acc': avg_acc,
+        })
+
+    return avg_loss, avg_acc
+
+
+@torch.no_grad()
+@torch.autocast('cuda', dtype=torch.bfloat16)
+def validate_epoch_siamese(model, val_loader, device, mochi_loader=None, is_main_process=True):
+    """
+    Validation epoch for Siamese network.
+    Expects val_loader to return (img1, img2, label, metadata).
+    """
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for img1, img2, labels, metadata in tqdm(val_loader, desc='Validation [Siamese]', disable=not is_main_process):
+        img1 = img1.to(device, non_blocking=True)
+        img2 = img2.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        # Compute loss using model's compute_loss method
+        loss, acc = model.compute_loss(img1, img2, labels)
+
+        total_loss += loss.item()
+        total_correct += acc.item() * img1.size(0)
+        total_samples += img1.size(0)
+
+    avg_loss = total_loss / len(val_loader)
+    avg_acc = total_correct / total_samples
+
+    if dist.is_initialized():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            loss_tensor = torch.tensor(avg_loss, device=device)
+            acc_tensor = torch.tensor(avg_acc, device=device)
+
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+        dist.all_reduce(acc_tensor, op=dist.ReduceOp.AVG)
+
+        avg_loss = loss_tensor.item()
+        avg_acc = acc_tensor.item()
+
+    # Evaluate on Mochi with Siamese-specific logic
+    mochi_results = evaluate_mochi_siamese(model, mochi_loader, device)
+
+    if dist.is_initialized():
+        for k, v in mochi_results.items():
+            mochi_tensor = torch.tensor(v, device=device)
+            dist.all_reduce(mochi_tensor, op=dist.ReduceOp.AVG)
+            mochi_results[k] = mochi_tensor.item()
+
+    if is_main_process:
+        wandb.log({
+            'val/loss': avg_loss,
+            'val/acc': avg_acc,
+            **mochi_results
+        })
+
     return avg_loss, avg_acc, mochi_results

@@ -1,6 +1,10 @@
 # Human Inspired Data Augmentations (HIDA)
 
-A unified PyTorch training pipeline for HIDA learning
+A unified PyTorch training pipeline for visual similarity learning with HIDA datasets.
+
+Supports two training modes:
+- **Contrastive Learning**: Triplet-based training with various loss functions
+- **Siamese Learning**: Binary similarity prediction with frozen or unfrozen backbone
 
 ## Quick Start
 
@@ -10,7 +14,7 @@ pip install -r requirements.txt
 ```
 
 2. **Configure your training:**
-Edit `config.yaml` to set your dataset paths and training parameters.
+Edit `config.yaml` to set your dataset paths, training mode, and parameters.
 
 3. **Run training:**
 ```bash
@@ -21,24 +25,66 @@ python train.py
 
 ```
 hida-tune/
-├── config.yaml                 # Main configuration file
-├── train.py                   # Main training script
-├── create_csv.py              # Dataset generation (HIDA only)
-├── create_csv_w_Objaverse.py  # Dataset generation (HIDA + Objaverse)
+├── config.yaml                      # Main configuration file
+├── train.py                         # Main training script
+├── create_csv.py                    # Dataset generation (Shapegen + Primigen)
+├── create_csv_w_Objaverse_co3D.py   # Dataset generation (+ Objaverse + CO3D)
 ├── datasets/
-│   ├── builder.py             # Dataset builder utilities
-│   └── hida_dataset.py        # HIDA dataset implementation
+│   ├── builder.py                   # Dataset builder utilities
+│   ├── hida_dataset.py              # Triplet dataset implementation
+│   ├── siamese_dataset.py           # Siamese pair dataset wrapper
+│   └── mochi_dataset.py             # MOCHI benchmark dataset
 ├── models/
-│   └── dinov2.py             # DINOv2 backbone implementation
+│   ├── __init__.py                  # Model exports (ContrastiveModel, SiameseContrastiveModel)
+│   └── dinov2.py                    # DINOv2 backbone implementation
+├── training/
+│   ├── trainer.py                   # Training and validation loops
+│   └── __init__.py                  # Training function exports
+├── evaluation/
+│   └── mochi_eval.py                # MOCHI benchmark evaluation
 ├── utils/
-│   ├── losses.py             # Loss function implementations
-│   └── ...                   # Other utilities
-├── logs/                     # Training logs and checkpoints
+│   ├── losses.py                    # Loss function implementations
+│   ├── __init__.py                  # Utility exports
+│   └── object_manifest.py           # Object tracking for reproducibility
+└── logs/                            # Training logs and checkpoints
 ```
 
 ## Configuration
 
 The main configuration file `config.yaml` contains all training parameters organized into sections:
+
+### Training Mode Configuration
+Choose between contrastive and Siamese learning:
+
+```yaml
+training:
+  # Training mode: "contrastive" or "siamese"
+  mode: "siamese"  # or "contrastive"
+
+  batch_size: 32
+  epochs: 30
+
+  # Siamese-specific configuration
+  siamese:
+    freeze_backbone: false      # Freeze DINO backbone (true) or fine-tune (false)
+    dropout: 0.2                # Dropout for Siamese network head
+    lr: 1e-4                    # Learning rate for Siamese head
+    optimizer_type: "adamw"     # Options: "adam", "adamw"
+    use_scheduler: true         # Enable learning rate scheduling
+    warmup_epochs: 3            # Warmup epochs before cosine annealing
+    wandb_project: "Siamese-learning"
+```
+
+**Contrastive Mode:**
+- Uses triplets (A, A', B) directly
+- Applies triplet-based loss functions (oddity, triplet, hinge, multi-similarity)
+- Trains embedding space with contrastive objectives
+
+**Siamese Mode:**
+- Converts each triplet into 3 pairs: (A, A') positive, (A, B) negative, (A', B) negative
+- Uses binary cross-entropy loss for similarity prediction
+- Can freeze backbone for efficient linear probing
+- 3× more training samples per triplet
 
 ### Dataset Generation Configuration
 Configure which datasets to use and how to generate them:
@@ -126,36 +172,87 @@ augmentation:
 
 ### HIDA Dataset (`dataset_type: "hida"`)
 - Uses `create_csv.py`
-- Combines Shapegen + Primigen datasets
+- Combines **Shapegen + Primigen** datasets
 - 6 combinations: 3 backgrounds × 2 datasets
+- ~1,600 shapegen objects, ~1,620 primigen objects
 
 ### HIDA + Objaverse (`dataset_type: "hida_objaverse"`)
-- Uses `create_csv_w_Objaverse.py`
-- Combines Shapegen + Primigen + Objaverse
+- Uses `create_csv_w_Objaverse_co3D.py` with `--no-co3d` flag
+- Combines **Shapegen + Primigen + Objaverse**
 - 9 combinations: 3 backgrounds × 3 datasets
 
-### Objaverse Only (`dataset_type: "objaverse"`)
-- Uses `create_csv_w_Objaverse.py`
-- Only Objaverse dataset
-- 3 combinations: 3 backgrounds × 1 dataset
+### HIDA + CO3D (`dataset_type: "hida_co3d"`)
+- Uses `create_csv_w_Objaverse_co3D.py` with `--no-objaverse` flag
+- Combines **Shapegen + Primigen + CO3D**
+- 9 combinations: 3 backgrounds × 3 datasets
+
+### HIDA + Objaverse + CO3D (`dataset_type: "hida_co3d_objaverse"`)
+- Uses `create_csv_w_Objaverse_co3D.py`
+- All four datasets: **Shapegen + Primigen + Objaverse + CO3D**
+- 12 combinations: 3 backgrounds × 4 datasets
+
+### Individual Datasets
+- `dataset_type: "objaverse"` - Objaverse only (3 backgrounds)
+- `dataset_type: "co3d"` - CO3D only (3 backgrounds)
+- `dataset_type: "objaverse_co3d"` - Objaverse + CO3D (6 backgrounds)
+
+### Dataset Characteristics
+
+**Shapegen:**
+- Procedurally generated shapes with varying extrusions and smoothness
+- Similarity-based triplet selection (low/medium/high bins)
+- ~10 viewpoints per object
+
+**Primigen:**
+- Primitive compositions with place/warp/config variations
+- Condition-based triplets (place, warp, config)
+- Structured hierarchy: n-level → config → warp → place
+- ~10 viewpoints per object
+
+**Objaverse:**
+- Real-world 3D objects from Objaverse dataset
+- Similarity-based triplet selection
+- 360° viewpoint coverage
+
+**CO3D:**
+- Real-world multi-view sequences from CO3D dataset
+- Category-based organization
+- Multiple frames per sequence
 
 ## Architecture Overview
 
 ### Training Pipeline
 
 1. **Dataset Generation**: Based on `dataset_type`, generates CSV files with triplet information
-2. **Model Creation**: Instantiates DINOv2 backbone with optional LoRA fine-tuning
-3. **Data Loading**: Creates train/val/test dataloaders with configured augmentations
-4. **Loss Function**: Applies selected loss function (oddity, triplet, etc.)
-5. **Training Loop**: Standard PyTorch training with validation and checkpointing
+2. **Model Creation**:
+   - **Contrastive mode**: `ContrastiveModel` with DINOv2 backbone
+   - **Siamese mode**: `SiameseContrastiveModel` with DINOv2 + similarity head
+3. **Data Loading**:
+   - **Contrastive mode**: Loads triplets directly
+   - **Siamese mode**: Wraps triplets into pair dataset (3 pairs per triplet)
+4. **Training Loop**:
+   - Applies augmentations (optional)
+   - Computes loss (contrastive or binary cross-entropy)
+   - Validates on held-out set
+   - Evaluates on MOCHI benchmark
+   - Saves checkpoints
 
 ### Key Components
 
-#### ContrastiveModel (`models/`)
+#### ContrastiveModel (`models/__init__.py`)
 Wraps the DINOv2 backbone for contrastive learning:
 - Extracts embeddings from triplet inputs (anchor, positive, negative)
 - Supports LoRA fine-tuning for efficient training
 - Handles different DINOv2 variants (base/large)
+- Forward pass returns (anchor_emb, positive_emb, negative_emb)
+
+#### SiameseContrastiveModel (`models/__init__.py`)
+Extends ContrastiveModel with similarity prediction:
+- **Backbone**: Frozen or unfrozen DINOv2 for feature extraction
+- **Siamese Head**: 3-layer MLP (1024 → 512 → 256 → 1) with dropout
+- **Forward pass**: Returns similarity score (0-1) for image pairs
+- **Loss**: Binary cross-entropy between predicted and ground truth similarity
+- Supports separate learning rates for backbone and head
 
 #### HIDADataset (`datasets/hida_dataset.py`)
 PyTorch Dataset for loading triplet data:
