@@ -29,6 +29,8 @@ hida-tune/
 ├── train.py                         # Main training script
 ├── create_csv.py                    # Dataset generation (Shapegen + Primigen)
 ├── create_csv_w_Objaverse_co3D.py   # Dataset generation (+ Objaverse + CO3D)
+├── HIDA_data_generation/            # Object generation & rendering scripts
+│   └── README.md                    # See detailed guide: HIDA_data_generation/README.md
 ├── datasets/
 │   ├── builder.py                   # Dataset builder utilities
 │   ├── hida_dataset.py              # Triplet dataset implementation
@@ -167,6 +169,19 @@ augmentation:
     probability: 0.5
   
 ```
+
+## Object Generation and Rendering
+
+For detailed instructions on generating and rendering Shapegen and Primigen objects, see:
+
+**[HIDA Data Generation Guide](HIDA_data_generation/README.md)**
+
+The guide covers:
+- **Shapegen**: Procedural shape generation with controlled complexity and smoothness
+- **Primigen**: Primitive compositions with hierarchical variations (place/warp/config)
+- **Rendering**: Multi-viewpoint rendering with configurable lighting
+- **Similarity Binning**: How similarity scores are computed and used for triplet selection
+- **Complete Workflows**: End-to-end examples for both pipelines
 
 ## Dataset Types
 

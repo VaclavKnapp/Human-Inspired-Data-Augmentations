@@ -50,8 +50,10 @@ dataset_generation:
   regenerate_per_epoch: true  # Regenerate dataset for each epoch (for data diversity)
   
   # Ratio distributions
-  shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
-  primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
+  #shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
+  #primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
+  shapegen_ratios: [0.05, 0.05, 0.90]  # [low, medium, high] similarity ratios
+  primigen_ratios: [0.90, 0.05, 0.05]  # [place, warp, config] condition ratios
   objaverse_ratios: [0.05, 0.20, 0.75]  # [low, medium, high] similarity ratios
   co3d_ratios: [0.20, 0.45, 0.35]      # [low, medium, high] similarity ratios
   n_ratios: [0.40, 0.40, 0.20]         # [n2, n3, n4] complexity ratios for Primigen
@@ -80,16 +82,16 @@ training:
 
   # Siamese-specific configuration
   siamese:
-    freeze_backbone: false  # Freeze DINO backbone during Siamese training
+    freeze_backbone: true  # Freeze DINO backbone during Siamese training
     dropout: 0.2  # Dropout for Siamese network
-    lr: 1e-4  # Learning rate for Siamese network head (backbone uses optimizer.lr when unfrozen)
+    lr: 2e-6  # Learning rate for Siamese network head (backbone uses optimizer.lr when unfrozen)
     wandb_project: "Siamese-learning"  # WandB project for Siamese experiments
 
     # Optimizer configuration for Siamese mode
-    optimizer_type: "adamw"  # Options: "adam", "adamw"
+    optimizer_type: "adam"  # Options: "adam", "adamw"
 
     # Scheduler configuration for Siamese mode
-    use_scheduler: true  # Enable/disable learning rate scheduler
+    use_scheduler: false  # Enable/disable learning rate scheduler
     warmup_epochs: 3  # Number of warmup epochs (linear warmup from 0.1*lr to lr)
     # After warmup, cosine annealing is applied for remaining epochs
 
