@@ -2,25 +2,6 @@
 
 A unified PyTorch training pipeline for visual similarity learning with HIDA datasets.
 
-## Examples of Procedurally Generated Objects
-
-### Shapegen
-<p align="center">
-  <img src="images/shapegen/005.png" width="32%" />
-  <img src="images/shapegen/041.png" width="32%" />
-  <img src="images/shapegen/005 copy.png" width="32%" />
-</p>
-
-### Primigen
-<p align="center">
-  <img src="images/027.png" width="32%" />
-  <img src="images/006.png" width="32%" />
-  <img src="images/004.png" width="32%" />
-</p>
-
-> *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
-> **Paul Cézanne**
-
 Supports two training modes:
 - **Contrastive Learning**: Triplet-based training with various loss functions
 - **Siamese Learning**: Binary similarity prediction with frozen or unfrozen backbone
@@ -39,6 +20,25 @@ Edit `config.yaml` to set your dataset paths, training mode, and parameters.
 ```bash
 python train.py
 ```
+
+## Examples of Procedurally Generated Objects
+
+### Shapegen
+<p align="center">
+  <img src="images/shapegen/005.png" width="32%" />
+  <img src="images/shapegen/041.png" width="32%" />
+  <img src="images/shapegen/005 copy.png" width="32%" />
+</p>
+
+### Primigen
+<p align="center">
+  <img src="images/027.png" width="32%" />
+  <img src="images/006.png" width="32%" />
+  <img src="images/004.png" width="32%" />
+</p>
+
+> *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
+> **Paul Cézanne**
 
 ## Project Structure
 
