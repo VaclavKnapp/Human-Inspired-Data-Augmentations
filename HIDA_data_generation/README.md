@@ -22,7 +22,7 @@ This directory contains scripts for generating and rendering two types of 3D obj
   <img src="../images/004 copy 2.png" width="24%" />
   <img src="../images/004 copy 3.png" width="24%" />
   <img src="../images/003.png" width="24%" />
-  <img src="../images/004.png" width="24%" />
+  <img src="../images/001.png" width="24%" />
 </p>
 
 ## Quick Start

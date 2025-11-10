@@ -7,7 +7,7 @@ A unified PyTorch training pipeline for visual similarity learning with HIDA dat
 <p align="center">
   <img src="images/027.png" width="32%" />
   <img src="images/006.png" width="32%" />
-  <img src="images/001.png" width="32%" />
+  <img src="images/004.png" width="32%" />
 </p>
 
 > *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
