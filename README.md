@@ -2,7 +2,7 @@
 
 A unified PyTorch training pipeline for visual similarity learning with HIDA datasets.
 
-## Examples of procedurally generated objects
+## Examples of Procedurally Generated Objects
 
 ### Shapegen
 <p align="center">
