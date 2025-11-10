@@ -2,6 +2,17 @@
 
 A unified PyTorch training pipeline for visual similarity learning with HIDA datasets.
 
+## Example Primigen Objects
+
+<p align="center">
+  <img src="images/027.png" width="32%" />
+  <img src="images/006.png" width="32%" />
+  <img src="images/001.png" width="32%" />
+</p>
+
+> *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
+> — **Paul Cézanne**
+
 Supports two training modes:
 - **Contrastive Learning**: Triplet-based training with various loss functions
 - **Siamese Learning**: Binary similarity prediction with frozen or unfrozen backbone

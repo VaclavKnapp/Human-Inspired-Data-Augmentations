@@ -4,6 +4,27 @@ This directory contains scripts for generating and rendering two types of 3D obj
 1. **Shapegen**: Procedurally generated abstract shapes
 2. **Primigen**: Primitive compositions with controlled variations
 
+## Gallery of Primigen objects
+
+<p align="center">
+  <img src="../images/002.png" width="24%" />
+  <img src="../images/008.png" width="24%" />
+  <img src="../images/013.png" width="24%" />
+  <img src="../images/019.png" width="24%" />
+</p>
+<p align="center">
+  <img src="../images/004 copy.png" width="24%" />
+  <img src="../images/029.png" width="24%" />
+  <img src="../images/004 copy.png" width="24%" />
+  <img src="../images/008 copy.png" width="24%" />
+</p>
+<p align="center">
+  <img src="../images/004 copy 2.png" width="24%" />
+  <img src="../images/004 copy 3.png" width="24%" />
+  <img src="../images/003.png" width="24%" />
+  <img src="../images/004.png" width="24%" />
+</p>
+
 ## Quick Start
 
 **Use the unified pipeline for easy generation:**
