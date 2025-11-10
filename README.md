@@ -18,8 +18,8 @@ A unified PyTorch training pipeline for visual similarity learning with HIDA dat
   <img src="images/004.png" width="32%" />
 </p>
 
-#### > *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
-#### > **Paul Cézanne**
+> *"Treat nature by means of the cylinder, the sphere, the cone, everything brought into proper perspective."*
+> **Paul Cézanne**
 
 Supports two training modes:
 - **Contrastive Learning**: Triplet-based training with various loss functions
