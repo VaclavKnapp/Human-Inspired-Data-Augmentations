@@ -2,8 +2,16 @@
 
 A unified PyTorch training pipeline for visual similarity learning with HIDA datasets.
 
-## Example Primigen Objects
+## Examples of procedurally generated objects
 
+# Shapegen
+<p align="center">
+  <img src="images/shapegen/005.png" width="32%" />
+  <img src="images/shapegen/041.png" width="32%" />
+  <img src="images/shapegen/005 copy.png" width="32%" />
+</p>
+
+# Primigen
 <p align="center">
   <img src="images/027.png" width="32%" />
   <img src="images/006.png" width="32%" />
