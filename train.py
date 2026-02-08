@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model
 from datasets.builder import build_loader
 from datasets import SiamesePairDatasetBalanced, ImageNetDataset
 from models import ContrastiveModel, SiameseContrastiveModel
-from training import train_epoch, validate_epoch, train_epoch_siamese, validate_epoch_siamese, train_epoch_pairwise
+from training import train_epoch, validate_epoch, train_epoch_siamese, validate_epoch_siamese, train_epoch_pairwise, validate_epoch_pairwise
 from utils import set_seed, save_checkpoint, TripletLoss, suppress_print, suppress_wandb, suppress_logging
 from utils.losses import HingeLoss, SingleTripletMultiSimilarityLoss, Oddity_Loss, TripletLoss, ContrastiveSimilarityLoss
 from loguru import logger
@@ -673,9 +673,9 @@ def main(cfg: DictConfig) -> None:
             eval_config=eval_config
         )
     elif is_pairwise_loss(cfg.loss.type):
-        # For pairwise loss, use triplet validation loader
-        val_loss, val_acc, mochi_results = validate_epoch(
-            model, val_loader_triplet_eval, criterion, device, mochi_loader, is_main_process,
+        # For pairwise loss, use pair validation loader (MOCHI/ImageNet are independent)
+        val_loss, val_acc, mochi_results = validate_epoch_pairwise(
+            model, val_loader, criterion, device, mochi_loader, is_main_process,
             imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch=0,
             eval_config=eval_config
         )
@@ -728,8 +728,8 @@ def main(cfg: DictConfig) -> None:
             train_loader.dataset.csv_path = epoch_dataset_path
             train_loader.dataset.train_ratio = epoch_train_ratio
             train_loader.dataset.reload_data()
-        elif training_mode == "siamese" and hasattr(train_loader.dataset, "triplet_dataset"):
-            # For Siamese mode, update the underlying triplet dataset
+        elif (training_mode == "siamese" or use_pairwise_data) and hasattr(train_loader.dataset, "triplet_dataset"):
+            # For Siamese mode or pairwise mode, update the underlying triplet dataset
             train_loader.dataset.triplet_dataset.csv_path = epoch_dataset_path
             train_loader.dataset.triplet_dataset.train_ratio = epoch_train_ratio
             train_loader.dataset.triplet_dataset.reload_data()
@@ -739,7 +739,7 @@ def main(cfg: DictConfig) -> None:
             val_loader.dataset.csv_path = epoch_dataset_path
             val_loader.dataset.train_ratio = epoch_train_ratio
             val_loader.dataset.reload_data()
-        elif training_mode == "siamese" and hasattr(val_loader.dataset, "triplet_dataset"):
+        elif (training_mode == "siamese" or use_pairwise_data) and hasattr(val_loader.dataset, "triplet_dataset"):
             val_loader.dataset.triplet_dataset.csv_path = epoch_dataset_path
             val_loader.dataset.triplet_dataset.train_ratio = epoch_train_ratio
             val_loader.dataset.triplet_dataset.reload_data()
@@ -760,9 +760,9 @@ def main(cfg: DictConfig) -> None:
         elif is_pairwise_loss(cfg.loss.type):
             # Contrastive mode with pairwise loss
             train_epoch_pairwise(model, train_loader, criterion, optimizer, device, epoch, scaler, is_main_process)
-            # Validation uses triplets for oddity task evaluation
-            val_loss, val_acc, mochi_results = validate_epoch(
-                model, val_loader_triplet_eval, criterion, device, mochi_loader, is_main_process,
+            # Validation uses pair loader (MOCHI/ImageNet evaluations are independent)
+            val_loss, val_acc, mochi_results = validate_epoch_pairwise(
+                model, val_loader, criterion, device, mochi_loader, is_main_process,
                 imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch,
                 eval_config=eval_config
             )
