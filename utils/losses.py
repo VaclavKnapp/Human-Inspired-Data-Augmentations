@@ -50,23 +50,61 @@ class Oddity_Loss(torch.nn.Module):
         super().__init__()
         self.temperature = temperature
         self.loss_fn = torch.nn.CrossEntropyLoss()
-    
+
     def forward(self, anchor_emb, positive_emb, negative_emb):
         anchor_emb = F.normalize(anchor_emb, p=2, dim=-1)
         positive_emb = F.normalize(positive_emb, p=2, dim=-1)
         negative_emb = F.normalize(negative_emb, p=2, dim=-1)
-        
+
         sim_ap = torch.einsum('nd,nd->n', anchor_emb, positive_emb)
         sim_an = torch.einsum('nd,nd->n', anchor_emb, negative_emb)
         sim_pn = torch.einsum('nd,nd->n', positive_emb, negative_emb)
-        
+
         mean_sim_anchor = (sim_ap + sim_an) / 2
         mean_sim_positive = (sim_ap + sim_pn) / 2
         mean_sim_negative = (sim_pn + sim_an) / 2
-        
+
         logits = -torch.stack([mean_sim_anchor, mean_sim_positive, mean_sim_negative], dim=1)
         logits /= self.temperature
-        
+
         target = torch.full((anchor_emb.size(0),), 2, dtype=torch.long, device=anchor_emb.device)
         loss = self.loss_fn(logits, target)
         return loss
+
+
+class ContrastiveSimilarityLoss(torch.nn.Module):
+    """
+    Standard pairwise contrastive loss for metric learning.
+    Given matched and unmatched pairs, learns a representation space
+    where semantically similar inputs are closer together.
+
+    This loss operates on pairs (img1, img2) with binary labels:
+    - label=1.0 for similar/matched pairs (should be close)
+    - label=0.0 for dissimilar/unmatched pairs (should be far)
+    """
+    def __init__(self, temperature=0.5):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, emb_a, emb_b, label):
+        """
+        Args:
+            emb_a: embeddings of first input  (N, D)
+            emb_b: embeddings of second input (N, D)
+            label: 1.0 if same category, 0.0 if different (N,)
+
+        Returns:
+            Binary cross-entropy loss
+        """
+        # Normalize embeddings to unit sphere (makes dot product = cosine similarity)
+        emb_a = F.normalize(emb_a, p=2, dim=-1)
+        emb_b = F.normalize(emb_b, p=2, dim=-1)
+
+        # Compute cosine similarity via dot product
+        similarity = (emb_a * emb_b).sum(dim=-1)  # (N,)
+
+        # Scale by temperature (higher temp = softer decisions)
+        logit = similarity / self.temperature
+
+        # Binary cross-entropy: pushes similar pairs to high similarity, dissimilar to low
+        return F.binary_cross_entropy_with_logits(logit, label)

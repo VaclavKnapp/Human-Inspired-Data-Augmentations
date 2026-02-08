@@ -81,18 +81,22 @@ def evaluate_mochi(
     train_fraction: float = 0.75,  # subset_fraction in reference
     svm_C: float = 1.0,
     svm_max_iter: int = 5000,
+    run_cosine: bool = True,  # Whether to run cosine evaluation
+    run_svm: bool = True,     # Whether to run SVM evaluation
 ):
     """
-    Computes BOTH:
-      1) cosine-argmin oddity (zero-shot)
-      2) same–different linear SVM readout (GLOBAL cross-condition training like reference)
+    Computes evaluation metrics based on flags:
+      1) cosine-argmin oddity (zero-shot) - if run_cosine=True
+      2) same–different linear SVM readout - if run_svm=True
 
-    Returns a dict with:
-      - mochi_cosine_overall, mochi_samediff_overall
-      - per-condition: mochi_cosine/{dataset_condition}, mochi_samediff/{dataset_condition}
+    Returns a dict with selected metrics based on run_cosine and run_svm flags
     """
 
     model.eval()
+
+    # Skip evaluation if both are disabled
+    if not run_cosine and not run_svm:
+        return {}
 
     total_correct_cos = 0.0
     total_samples = 0
@@ -101,9 +105,17 @@ def evaluate_mochi(
     n_images_per_condition = dict()
 
     # cache for SVM readout: {cond_name: list of dicts with 'feats' (3,D) and 'odd'}
-    cache_by_condition = defaultdict(list)
+    cache_by_condition = defaultdict(list) if run_svm else None
 
-    for images, dataset, condition, oddity_indices in tqdm(mochi_loader, desc='MOCHI: extract & cosine'):
+    desc = 'MOCHI: extract'
+    if run_cosine and run_svm:
+        desc = 'MOCHI: extract & cosine'
+    elif run_cosine:
+        desc = 'MOCHI: cosine'
+    elif run_svm:
+        desc = 'MOCHI: extract for SVM'
+
+    for images, dataset, condition, oddity_indices in tqdm(mochi_loader, desc=desc):
         images = images.to(device)
         b_actual, n_images, c, h, w = images.shape
 
@@ -113,167 +125,179 @@ def evaluate_mochi(
         feats = feats_flat.view(b_actual, n_images, D)    # (B,n_images,D)
 
         # --- cosine baseline ---
-        feats_norm = feats / feats.norm(dim=2, keepdim=True).clamp_min(1e-6)
-        sim_mats = torch.bmm(feats_norm, feats_norm.transpose(1, 2))  # (B,n_images,n_images)
+        if run_cosine:
+            feats_norm = feats / feats.norm(dim=2, keepdim=True).clamp_min(1e-6)
+            sim_mats = torch.bmm(feats_norm, feats_norm.transpose(1, 2))  # (B,n_images,n_images)
 
-        diag = torch.eye(n_images, device=device).unsqueeze(0).expand(b_actual, -1, -1)
-        sim_no_diag = sim_mats - diag
-        sim_mean = sim_no_diag.sum(dim=2) / (n_images - 1)
-        pred_oddity = torch.argmin(sim_mean, dim=1)
+            diag = torch.eye(n_images, device=device).unsqueeze(0).expand(b_actual, -1, -1)
+            sim_no_diag = sim_mats - diag
+            sim_mean = sim_no_diag.sum(dim=2) / (n_images - 1)
+            pred_oddity = torch.argmin(sim_mean, dim=1)
 
-        correct = (pred_oddity == oddity_indices.to(device)).float()
-        acc = adjust_accuracy(correct, 1 / n_images)
+            correct = (pred_oddity == oddity_indices.to(device)).float()
+            acc = adjust_accuracy(correct, 1 / n_images)
 
-        total_correct_cos += acc.sum().item()
-        total_samples += b_actual
+            total_correct_cos += acc.sum().item()
+            total_samples += b_actual
 
         # per-condition tallies AND cache feats for SVM
         for i, (dataset_i, condition_i) in enumerate(zip(dataset, condition)):
             cond_name = f"{dataset_i}_{condition_i}"
             n_images_per_condition[cond_name] = n_images
-            acc_per_condition_cos[cond_name] += acc[i].item()
-            total_per_condition[cond_name] += 1
+
+            if run_cosine:
+                acc_per_condition_cos[cond_name] += acc[i].item()
+                total_per_condition[cond_name] += 1
 
             # cache raw (unnormalized) features for SVM readout on CPU
-            cache_by_condition[cond_name].append({
-                "feats": feats[i].detach().cpu().float(),   # (n_images,D)
-                "odd": int(oddity_indices[i]),
-            })
+            if run_svm:
+                cache_by_condition[cond_name].append({
+                    "feats": feats[i].detach().cpu().float(),   # (n_images,D)
+                    "odd": int(oddity_indices[i]),
+                })
 
     # reduce cosine baseline across ranks if needed
-    if dist.is_initialized():
-        t_correct = torch.tensor(total_correct_cos, device=device)
-        t_samples = torch.tensor(total_samples, device=device)
-        dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
-        dist.all_reduce(t_samples, op=dist.ReduceOp.SUM)
-        cosine_overall = (t_correct.item() / max(1, t_samples.item()))
-        for cond_name in list(acc_per_condition_cos.keys()):
-            cond_correct = torch.tensor(acc_per_condition_cos[cond_name], device=device)
-            cond_total = torch.tensor(total_per_condition[cond_name], device=device)
-            dist.all_reduce(cond_correct, op=dist.ReduceOp.SUM)
-            dist.all_reduce(cond_total, op=dist.ReduceOp.SUM)
-            acc_per_condition_cos[cond_name] = cond_correct.item() / max(1, cond_total.item())
-    else:
-        cosine_overall = total_correct_cos / max(1, total_samples)
-        acc_per_condition_cos = {k: v / total_per_condition[k] for k, v in acc_per_condition_cos.items()}
+    if run_cosine:
+        if dist.is_initialized():
+            t_correct = torch.tensor(total_correct_cos, device=device)
+            t_samples = torch.tensor(total_samples, device=device)
+            dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
+            dist.all_reduce(t_samples, op=dist.ReduceOp.SUM)
+            cosine_overall = (t_correct.item() / max(1, t_samples.item()))
+            for cond_name in list(acc_per_condition_cos.keys()):
+                cond_correct = torch.tensor(acc_per_condition_cos[cond_name], device=device)
+                cond_total = torch.tensor(total_per_condition[cond_name], device=device)
+                dist.all_reduce(cond_correct, op=dist.ReduceOp.SUM)
+                dist.all_reduce(cond_total, op=dist.ReduceOp.SUM)
+                acc_per_condition_cos[cond_name] = cond_correct.item() / max(1, cond_total.item())
+        else:
+            cosine_overall = total_correct_cos / max(1, total_samples)
+            acc_per_condition_cos = {k: v / total_per_condition[k] for k, v in acc_per_condition_cos.items()}
 
     # --------------------------
     # linear SVM (reference implementation approach - CONDITION-SPECIFIC TRAINING)
     # --------------------------
-    np.random.seed(42)  # for reproducible random subsets
+    samediff_overall = 0.0
+    acc_per_condition_sd = {}
 
-    # Store individual trial results for aggregation
-    trial_results = []
-    acc_per_condition_sd = defaultdict(list)
+    if run_svm:
+        np.random.seed(42)  # for reproducible random subsets
 
-    print("Processing each condition for SVM evaluation...")
-    # iterate through each condition (exactly like notebook)
-    for cond_name, trials_in_condition in tqdm(cache_by_condition.items(), desc='MOCHI: same–different SVM'):
+        # Store individual trial results for aggregation
+        trial_results = []
+        acc_per_condition_sd = defaultdict(list)
 
-        # Convert cached features to reference format for this condition only
-        features = []
-        oddities = {}
-        images = {}
-        feature_idx = 0
+        print("Processing each condition for SVM evaluation...")
+        # iterate through each condition (exactly like notebook)
+        for cond_name, trials_in_condition in tqdm(cache_by_condition.items(), desc='MOCHI: same–different SVM'):
 
-        for trial_idx, trial in enumerate(trials_in_condition):
-            trial_id = f"{trial_idx}"  # Simple trial ID within condition
-            oddities[trial_id] = trial["odd"]
-            trial_feats = trial["feats"].numpy()  # (n_images, D)
+            # Convert cached features to reference format for this condition only
+            features = []
+            oddities = {}
+            images = {}
+            feature_idx = 0
 
-            # Store features and create image mapping
-            for img_idx in range(trial_feats.shape[0]):
-                features.append(trial_feats[img_idx].flatten())
-                images[f'{trial_id}-{img_idx}'] = feature_idx
-                feature_idx += 1
+            for trial_idx, trial in enumerate(trials_in_condition):
+                trial_id = f"{trial_idx}"  # Simple trial ID within condition
+                oddities[trial_id] = trial["odd"]
+                trial_feats = trial["feats"].numpy()  # (n_images, D)
 
-        features = np.array(features)
-        trials = list(oddities.keys())
+                # Store features and create image mapping
+                for img_idx in range(trial_feats.shape[0]):
+                    features.append(trial_feats[img_idx].flatten())
+                    images[f'{trial_id}-{img_idx}'] = feature_idx
+                    feature_idx += 1
 
-        # Generate delta vectors WITHIN this condition only
-        diffs = generate_delta_vectors(trials, features, oddities, images)
+            features = np.array(features)
+            trials = list(oddities.keys())
 
-        # Process each trial in this condition
-        for trial_idx, trial in enumerate(trials_in_condition):
-            i_trial = str(trial_idx)
-            i_oddity_index = trial["odd"]
+            # Generate delta vectors WITHIN this condition only
+            diffs = generate_delta_vectors(trials, features, oddities, images)
 
-            # Extract indices and labels for training SVM (OTHER TRIALS IN SAME CONDITION)
-            train_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name != i_trial]
+            # Process each trial in this condition
+            for trial_idx, trial in enumerate(trials_in_condition):
+                i_trial = str(trial_idx)
+                i_oddity_index = trial["odd"]
 
-            if not train_indices:  # Skip if no training data
-                continue
+                # Extract indices and labels for training SVM (OTHER TRIALS IN SAME CONDITION)
+                train_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name != i_trial]
 
-            # vectors for the difference between each image vector
-            X_train = diffs['deltas'][train_indices, :]
-            # labels for whether each vector was 'same' or 'different'
-            y_train = diffs['labels'][train_indices]
+                if not train_indices:  # Skip if no training data
+                    continue
 
-            # Extract indices and labels for testing SVM
-            test_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name == i_trial]
+                # vectors for the difference between each image vector
+                X_train = diffs['deltas'][train_indices, :]
+                # labels for whether each vector was 'same' or 'different'
+                y_train = diffs['labels'][train_indices]
 
-            if not test_indices:  # Skip if no test data
-                continue
+                # Extract indices and labels for testing SVM
+                test_indices = [i for i, trial_name in enumerate(diffs['trials']) if trial_name == i_trial]
 
-            # vectors for the difference between each image vector
-            X_test = diffs['deltas'][test_indices, :]
+                if not test_indices:  # Skip if no test data
+                    continue
 
-            # for each iteration use X% of the available trials
-            len_subset = int(train_fraction * len(X_train))
+                # vectors for the difference between each image vector
+                X_test = diffs['deltas'][test_indices, :]
 
-            # prep for each iteration
-            choices = []
+                # for each iteration use X% of the available trials
+                len_subset = int(train_fraction * len(X_train))
 
-            for _ in range(svm_repeats):  # n_permutations = 100 like reference
-                # identify random subset of delta vectors to train on
-                random_subset = np.random.permutation(len(X_train))[:len_subset]
+                # prep for each iteration
+                choices = []
 
-                # define model to train a linear readout
-                clf = make_pipeline(StandardScaler(),
-                                  SVC(class_weight='balanced', probability=True))
-                # fit training data
-                clf.fit(X_train[random_subset, :], y_train[random_subset])
-                # predict performance on this trial
-                y_hat = clf.predict_proba(X_test)
+                for _ in range(svm_repeats):  # n_permutations = 100 like reference
+                    # identify random subset of delta vectors to train on
+                    random_subset = np.random.permutation(len(X_train))[:len_subset]
 
-                # identify which image has the highest probability of being different
-                prob_different = y_hat[:, 0] if y_hat.shape[1] > 1 else 1 - y_hat[:, 0]  # P(different)
+                    # define model to train a linear readout
+                    clf = make_pipeline(StandardScaler(),
+                                      SVC(class_weight='balanced', probability=True))
+                    # fit training data
+                    clf.fit(X_train[random_subset, :], y_train[random_subset])
+                    # predict performance on this trial
+                    y_hat = clf.predict_proba(X_test)
 
-                # Calculate per-image difference scores exactly like notebook
-                n_images = trial["feats"].shape[0]
-                i_diffs = []
-                for i in diffs['inds']:
-                    # Get pairs involving this image for the current trial
-                    pair_probs = [prob_different[pair_idx] for pair_idx in diffs['locs'][i]
-                                 if pair_idx < len(prob_different)]
-                    avg_diff_prob = np.mean(pair_probs) if pair_probs else 0.0
-                    i_diffs.append(avg_diff_prob)
+                    # identify which image has the highest probability of being different
+                    prob_different = y_hat[:, 0] if y_hat.shape[1] > 1 else 1 - y_hat[:, 0]  # P(different)
 
-                # determine whether the model-selected oddity matches ground truth
-                i_trial_accuracy = i_oddity_index == np.argmax(i_diffs)
-                # save
-                choices.append(i_trial_accuracy)
+                    # Calculate per-image difference scores exactly like notebook
+                    n_images = trial["feats"].shape[0]
+                    i_diffs = []
+                    for i in diffs['inds']:
+                        # Get pairs involving this image for the current trial
+                        pair_probs = [prob_different[pair_idx] for pair_idx in diffs['locs'][i]
+                                     if pair_idx < len(prob_different)]
+                        avg_diff_prob = np.mean(pair_probs) if pair_probs else 0.0
+                        i_diffs.append(avg_diff_prob)
 
-            # Average accuracy for this trial across all permutations
-            trial_mean_acc = np.mean(choices)
-            trial_results.append(trial_mean_acc)
-            acc_per_condition_sd[cond_name].append(trial_mean_acc)
+                    # determine whether the model-selected oddity matches ground truth
+                    i_trial_accuracy = i_oddity_index == np.argmax(i_diffs)
+                    # save
+                    choices.append(i_trial_accuracy)
 
-    # Aggregate results by condition
-    acc_per_condition_sd = {cond: np.mean(accs) for cond, accs in acc_per_condition_sd.items()}
+                # Average accuracy for this trial across all permutations
+                trial_mean_acc = np.mean(choices)
+                trial_results.append(trial_mean_acc)
+                acc_per_condition_sd[cond_name].append(trial_mean_acc)
 
-    # Overall SVM accuracy
-    samediff_overall = np.mean(trial_results) if trial_results else 0.0
+        # Aggregate results by condition
+        acc_per_condition_sd = {cond: np.mean(accs) for cond, accs in acc_per_condition_sd.items()}
 
-    metrics = {
-        'mochi_cosine_overall': cosine_overall,
-        'mochi_SVM_overall': samediff_overall,
-    }
+        # Overall SVM accuracy
+        samediff_overall = np.mean(trial_results) if trial_results else 0.0
 
-    for cond, acc in acc_per_condition_cos.items():
-        metrics[f'mochi_cosine/{cond}'] = acc
-    for cond, acc in acc_per_condition_sd.items():
-        metrics[f'mochi_samediff/{cond}'] = acc
+    # Build metrics dictionary based on what was computed
+    metrics = {}
+
+    if run_cosine:
+        metrics['mochi_cosine_overall'] = cosine_overall
+        for cond, acc in acc_per_condition_cos.items():
+            metrics[f'mochi_cosine/{cond}'] = acc
+
+    if run_svm:
+        metrics['mochi_SVM_overall'] = samediff_overall
+        for cond, acc in acc_per_condition_sd.items():
+            metrics[f'mochi_samediff/{cond}'] = acc
 
     return metrics
 

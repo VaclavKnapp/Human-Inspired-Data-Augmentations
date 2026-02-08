@@ -12,11 +12,11 @@ from omegaconf import DictConfig, OmegaConf
 from peft import LoraConfig, get_peft_model
 
 from datasets.builder import build_loader
-from datasets import SiamesePairDatasetBalanced
+from datasets import SiamesePairDatasetBalanced, ImageNetDataset
 from models import ContrastiveModel, SiameseContrastiveModel
-from training import train_epoch, validate_epoch, train_epoch_siamese, validate_epoch_siamese
+from training import train_epoch, validate_epoch, train_epoch_siamese, validate_epoch_siamese, train_epoch_pairwise
 from utils import set_seed, save_checkpoint, TripletLoss, suppress_print, suppress_wandb, suppress_logging
-from utils.losses import HingeLoss, SingleTripletMultiSimilarityLoss, Oddity_Loss, TripletLoss
+from utils.losses import HingeLoss, SingleTripletMultiSimilarityLoss, Oddity_Loss, TripletLoss, ContrastiveSimilarityLoss
 from loguru import logger
 from torch.utils.data import DataLoader
 import subprocess
@@ -26,7 +26,7 @@ import random
 def get_loss_function(loss_cfg):
     """Create loss function based on configuration"""
     loss_type = loss_cfg.type.lower()
-    
+
     if loss_type == "triplet":
         return TripletLoss(loss_cfg.margin)
     elif loss_type == "hinge":
@@ -39,8 +39,15 @@ def get_loss_function(loss_cfg):
         )
     elif loss_type == "oddity":
         return Oddity_Loss(temperature=loss_cfg.get("temperature", 0.1))
+    elif loss_type == "pairwise_contrastive":
+        return ContrastiveSimilarityLoss(temperature=loss_cfg.get("temperature", 0.5))
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+
+
+def is_pairwise_loss(loss_type):
+    """Check if loss type requires pairwise data format"""
+    return loss_type.lower() == "pairwise_contrastive"
 
 def generate_dataset_if_needed(cfg, exp_name):
     """Generate dataset CSV if needed based on configuration"""
@@ -448,9 +455,12 @@ def main(cfg: DictConfig) -> None:
     # Add augmentation config to datasets
     augmentation_config = cfg.augmentation if cfg.augmentation.enabled else None
     
-    # Build loaders - for Siamese mode, we'll wrap the datasets after creation
-    if training_mode == "siamese":
-        # For Siamese, we build triplet datasets first, then wrap them
+    # Check if using pairwise loss (requires pair format)
+    use_pairwise_data = (training_mode == "siamese") or (training_mode == "contrastive" and is_pairwise_loss(cfg.loss.type))
+
+    # Build loaders - for Siamese mode or pairwise loss, we'll wrap the datasets after creation
+    if use_pairwise_data:
+        # Build triplet datasets first
         train_loader_triplet = build_loader(train_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
                                            transform=backbone.transform, num_gpus=world_size, split="train",
                                            augmentation_config=augmentation_config,
@@ -483,8 +493,11 @@ def main(cfg: DictConfig) -> None:
             num_workers=num_workers,
             pin_memory=True
         )
+
+        # For validation, we also need triplet loaders for MOCHI evaluation
+        val_loader_triplet_eval = val_loader_triplet  # Keep for validation metrics
     else:
-        # Contrastive mode - use triplet datasets directly
+        # Contrastive mode with triplet loss - use triplet datasets directly
         train_loader = build_loader(train_dataset_cfg, num_workers, batch_size=cfg.training.batch_size,
                                    transform=backbone.transform, num_gpus=world_size, split="train",
                                    augmentation_config=augmentation_config,
@@ -496,12 +509,65 @@ def main(cfg: DictConfig) -> None:
                                  transform=backbone.transform, num_gpus=world_size, split="val",
                                  augmentation_config=None,  # No augmentation for validation
                                  augmentation_enabled=False)
+        val_loader_triplet_eval = val_loader  # Same as train for triplet losses
     
     mochi_loader = build_loader(cfg.splits.test_dataset, num_workers, batch_size=1,
                                transform=backbone.transform, num_gpus=1,
                                augmentation_config=None,  # No augmentation for test
                                augmentation_enabled=False)
-    
+
+    # Create ImageNet dataloaders if enabled
+    imagenet_train_loader = None
+    imagenet_test_loader = None
+    imagenet_config = cfg.get('imagenet_eval', None)
+
+    if imagenet_config and imagenet_config.get('enabled', False):
+        if is_main_process:
+            logger.info("Creating ImageNet evaluation dataloaders...")
+
+        # Create train dataset first to get class directories
+        imagenet_train_dataset = ImageNetDataset(
+            root_dir=imagenet_config.root_dir,
+            transform=backbone.transform,
+            split="train",
+            max_samples_per_class=imagenet_config.get('max_samples_per_class_train', 50),
+            max_classes=imagenet_config.get('max_classes', 100),
+            seed=cfg.system.random_seed,
+            train_ratio=imagenet_config.get('train_ratio', 0.7)
+        )
+
+        # Create test dataset with same classes as train
+        imagenet_test_dataset = ImageNetDataset(
+            root_dir=imagenet_config.root_dir,
+            transform=backbone.transform,
+            split="test",
+            max_samples_per_class=imagenet_config.get('max_samples_per_class_test', 20),
+            max_classes=imagenet_config.get('max_classes', 100),
+            seed=cfg.system.random_seed,
+            class_dirs=imagenet_train_dataset.class_dirs,  # Share same classes!
+            train_ratio=imagenet_config.get('train_ratio', 0.7)
+        )
+
+        imagenet_train_loader = DataLoader(
+            imagenet_train_dataset,
+            batch_size=imagenet_config.get('batch_size', 128),
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
+        imagenet_test_loader = DataLoader(
+            imagenet_test_dataset,
+            batch_size=imagenet_config.get('batch_size', 128),
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
+        if is_main_process:
+            logger.info(f"ImageNet train dataset size: {len(imagenet_train_dataset)}")
+            logger.info(f"ImageNet test dataset size: {len(imagenet_test_dataset)}")
+
     if is_main_process:
         # Use different wandb project for Siamese training
         wandb_project = cfg.training.siamese.wandb_project if training_mode == "siamese" else "Hida-data-size"
@@ -596,11 +662,29 @@ def main(cfg: DictConfig) -> None:
 
     best_val_loss = float('inf')
 
+    # Get evaluation config
+    eval_config = cfg.get('evaluation', None)
+
     # Initial validation
     if training_mode == "siamese":
-        val_loss, val_acc, mochi_results = validate_epoch_siamese(model, val_loader, device, mochi_loader, is_main_process)
+        val_loss, val_acc, mochi_results = validate_epoch_siamese(
+            model, val_loader, device, mochi_loader, is_main_process,
+            imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch=0,
+            eval_config=eval_config
+        )
+    elif is_pairwise_loss(cfg.loss.type):
+        # For pairwise loss, use triplet validation loader
+        val_loss, val_acc, mochi_results = validate_epoch(
+            model, val_loader_triplet_eval, criterion, device, mochi_loader, is_main_process,
+            imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch=0,
+            eval_config=eval_config
+        )
     else:
-        val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
+        val_loss, val_acc, mochi_results = validate_epoch(
+            model, val_loader, criterion, device, mochi_loader, is_main_process,
+            imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch=0,
+            eval_config=eval_config
+        )
     
     for epoch in range(cfg.training.epochs):
         # Generate new dataset for each epoch if needed
@@ -666,11 +750,30 @@ def main(cfg: DictConfig) -> None:
 
         # Use appropriate training and validation functions based on mode
         if training_mode == "siamese":
+            # Siamese mode
             train_epoch_siamese(model, train_loader, optimizer, device, epoch, scaler, is_main_process)
-            val_loss, val_acc, mochi_results = validate_epoch_siamese(model, val_loader, device, mochi_loader, is_main_process)
+            val_loss, val_acc, mochi_results = validate_epoch_siamese(
+                model, val_loader, device, mochi_loader, is_main_process,
+                imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch,
+                eval_config=eval_config
+            )
+        elif is_pairwise_loss(cfg.loss.type):
+            # Contrastive mode with pairwise loss
+            train_epoch_pairwise(model, train_loader, criterion, optimizer, device, epoch, scaler, is_main_process)
+            # Validation uses triplets for oddity task evaluation
+            val_loss, val_acc, mochi_results = validate_epoch(
+                model, val_loader_triplet_eval, criterion, device, mochi_loader, is_main_process,
+                imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch,
+                eval_config=eval_config
+            )
         else:
+            # Contrastive mode with triplet loss
             train_epoch(model, train_loader, criterion, optimizer, device, epoch, scaler, is_main_process)
-            val_loss, val_acc, mochi_results = validate_epoch(model, val_loader, criterion, device, mochi_loader, is_main_process)
+            val_loss, val_acc, mochi_results = validate_epoch(
+                model, val_loader, criterion, device, mochi_loader, is_main_process,
+                imagenet_train_loader, imagenet_test_loader, imagenet_config, epoch,
+                eval_config=eval_config
+            )
 
         # Step scheduler after each epoch
         scheduler.step()

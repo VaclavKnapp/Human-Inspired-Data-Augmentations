@@ -416,8 +416,8 @@ def generate_shapegen_triplet(base_path: str, camera_path: str, structure: Dict,
     # Create descriptive names with full path context
     name_a = f"extrusion_{extrusion}/smoothness_{smoothness}/{focal_shape}"
     name_b = f"extrusion_{extrusion}/smoothness_{smoothness}/{similar_obj}"
-    
-    print(f"[DEBUG] Successfully generated triplet: {condition}")
+
+    # Removed verbose debug print - progress is shown in generate_shapegen_triplets()
     return {
         'A': img_a_path,
         'A_prime': img_a_prime_path,
@@ -492,9 +492,9 @@ def generate_shapegen_triplets(base_path: str, similarity_file: str, camera_path
                 triplets.append(triplet)
                 generated += 1
                 consecutive_failures = 0
-                
+
                 if generated % 1000 == 0:
-                    print(f"    Generated {generated}/{target_count}")
+                    print(f"    Generated {generated}/{target_count} {bin_type} similarity triplets")
             else:
                 consecutive_failures += 1
                 if consecutive_failures > 1000:

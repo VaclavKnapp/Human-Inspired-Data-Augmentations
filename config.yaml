@@ -46,14 +46,14 @@ dataset_generation:
     co3d_sim: "/datasets/hida/current/co3D_sim/sequence_similarities_co3d.pkl"
   
   # Generation parameters
-  triplets_per_combo: 2000  # Number of triplets per dataset+background combination
+  triplets_per_combo: 6666  # Number of triplets per dataset+background combination
   regenerate_per_epoch: true  # Regenerate dataset for each epoch (for data diversity)
   
   # Ratio distributions
-  #shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
-  #primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
-  shapegen_ratios: [0.05, 0.05, 0.90]  # [low, medium, high] similarity ratios
-  primigen_ratios: [0.90, 0.05, 0.05]  # [place, warp, config] condition ratios
+  shapegen_ratios: [0.15, 0.55, 0.30]  # [low, medium, high] similarity ratios
+  primigen_ratios: [0.60, 0.25, 0.15]  # [place, warp, config] condition ratios
+  #shapegen_ratios: [0.05, 0.05, 0.90]  # [low, medium, high] similarity ratios
+  #primigen_ratios: [0.90, 0.05, 0.05]  # [place, warp, config] condition ratios
   objaverse_ratios: [0.05, 0.20, 0.75]  # [low, medium, high] similarity ratios
   co3d_ratios: [0.20, 0.45, 0.35]      # [low, medium, high] similarity ratios
   n_ratios: [0.40, 0.40, 0.20]         # [n2, n3, n4] complexity ratios for Primigen
@@ -73,7 +73,7 @@ training:
   # Training mode: "contrastive" or "siamese"
   # - contrastive: Standard triplet-based training (current approach)
   # - siamese: Binary similarity learning with frozen DINO backbone
-  mode: "siamese"
+  mode: "contrastive"
 
   batch_size: 32
   epochs: 30
@@ -110,20 +110,22 @@ model:
   
   # LoRA Configuration
   use_lora: true
-  lora_r: 8
+  lora_r: 16
   lora_alpha: 8
   lora_dropout: 0.1
 
 # Loss Configuration
 # =================
 loss:
-  # Loss function type: "triplet", "hinge", "multi_similarity", "oddity"
-  type: "oddity"
-  
+  # Loss function type: "triplet", "hinge", "multi_similarity", "oddity", "pairwise_contrastive"
+  # - triplet/hinge/multi_similarity/oddity: Operate on triplets (A, A', B)
+  # - pairwise_contrastive: Operates on pairs (img1, img2, label) - automatically converts triplets to pairs
+  type: "pairwise_contrastive"
+
   # Loss-specific parameters
   margin: 0.1  # Used by triplet and hinge loss
-  temperature: 0.1  # Used by oddity loss
-  
+  temperature: 0.3  # Used by oddity loss (0.5 for pairwise_contrastive)
+
   # Multi-similarity loss parameters (used when type="multi_similarity")
   alpha: 2
   beta: 50
@@ -181,7 +183,7 @@ augmentation:
   enabled: true
   
   # Augmentation parameters
-  save_every_n: 100000  # Save augmented samples every N items for inspection
+  save_every_n: 1000000  # Save augmented samples every N items for inspection
   save_dir: "./augmented_samples"  # Directory to save augmented samples
   
   # Individual augmentation parameters
@@ -213,8 +215,39 @@ evaluation:
   batch_size: 70  # Batch size for evaluation
   num_workers: 4
 
+  # Control which evaluations to run
+  # You can enable/disable each evaluation independently
+  run_mochi_cosine: true    # MOCHI cosine similarity (zero-shot)
+  run_mochi_svm: false       # MOCHI SVM same-different classification
+  run_imagenet: true        # ImageNet k-NN and/or linear probe (see imagenet_eval section)
+
   # MOCHI sampling configuration (percentage of each category to use)
   mochi_sampling:
     enabled: true  # Set to true to enable sampling
     sample_percentage: 0.5  # Percentage of each category to sample (0.0 to 1.0)
     seed: 42  # Random seed for reproducible sampling
+
+# ImageNet Evaluation Configuration
+# =================================
+imagenet_eval:
+  # Enable/disable ImageNet evaluation during training
+  enabled: true
+
+  # Path to ImageNet-22k dataset
+  root_dir: "/datasets/imagenet_22k/current"
+
+  # Evaluation settings
+  eval_frequency: 1  # Evaluate every N epochs (set to 1 for every epoch)
+  eval_knn: true  # Enable k-NN evaluation
+  eval_linear: false  # Enable linear probe evaluation (more expensive)
+  knn_k: 20  # Number of neighbors for k-NN
+
+  # Dataset subset configuration (to speed up evaluation)
+  max_classes: 200  # Maximum number of classes to use (ImageNet-22k has ~21k classes)
+  max_samples_per_class_train: 100  # Maximum samples per class for training set
+  max_samples_per_class_test: 50  # Maximum samples per class for test set
+  train_ratio: 0.7  # Ratio of images to use for train vs test (within each class)
+
+  # DataLoader settings
+  batch_size: 128  # Batch size for feature extraction
+  num_workers: 4  # Number of workers for data loading
